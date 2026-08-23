@@ -54,6 +54,18 @@ impl LogParser {
         self.mode
     }
 
+    pub fn consume_context_line(&mut self, line: &str) {
+        self.update_mode(line);
+
+        let Some(payload) = extract_chat_payload(line) else {
+            return;
+        };
+
+        if is_master_sword_activity(payload) {
+            self.mode = GameMode::MasterSword;
+        }
+    }
+
     pub fn consume_line(&mut self, line: &str) -> Vec<CollectorEvent> {
         self.update_mode(line);
 
@@ -152,6 +164,15 @@ fn extract_chat_payload(line: &str) -> Option<&str> {
     Some(payload.trim_start_matches([':', ' ']).trim())
 }
 
+fn is_master_sword_activity(payload: &str) -> bool {
+    is_raid_open(payload)
+        || is_raid_close(payload)
+        || parse_raid_location(payload).is_some()
+        || parse_drop(payload).is_some()
+        || parse_booster(payload).is_some()
+        || parse_global(payload).is_some()
+}
+
 fn parse_drop(payload: &str) -> Option<CollectorEvent> {
     let captures = DROP_LINE.captures(payload)?;
     let player_prefix = captures.name("player")?.as_str();
@@ -195,13 +216,11 @@ fn parse_booster(payload: &str) -> Option<CollectorEvent> {
 }
 
 fn parse_global(payload: &str) -> Option<CollectorEvent> {
-    let event_type = if payload.contains("Тьма наступает с заходом солнца")
-    {
+    let event_type = if payload.contains("Тьма наступает с заходом солнца") {
         GlobalEventType::Darkness
     } else if payload.contains("кровавая луна") {
         GlobalEventType::Moon
-    } else if payload.contains("Небо темнеет и окутывается глубокой тенью")
-    {
+    } else if payload.contains("Небо темнеет и окутывается глубокой тенью") {
         GlobalEventType::Eclipse
     } else if payload.contains("тепло солнца касается вашей кожи") {
         GlobalEventType::Explosion
@@ -263,4 +282,40 @@ fn extract_nickname(player_prefix: &str) -> Option<String> {
     }?;
 
     Some(candidate.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GameMode, LogParser};
+
+    #[test]
+    fn context_scan_recovers_master_sword_from_existing_join_line() {
+        let mut parser = LogParser::default();
+
+        parser.consume_context_line("[Client thread/INFO]: Joining server Мастера Мечей #17");
+
+        assert_eq!(parser.mode(), GameMode::MasterSword);
+        assert!(parser.flush().is_empty());
+    }
+
+    #[test]
+    fn context_scan_keeps_the_latest_server_transition() {
+        let mut parser = LogParser::default();
+
+        parser.consume_context_line("Joining server Мастера Мечей #17");
+        parser.consume_context_line("Joining server Лобби #4");
+
+        assert_eq!(parser.mode(), GameMode::Other);
+        assert!(parser.flush().is_empty());
+    }
+
+    #[test]
+    fn context_scan_can_recover_master_sword_from_recent_activity() {
+        let mut parser = LogParser::default();
+
+        parser.consume_context_line("[CHAT] [Рейд] Открылись врата на рейды");
+
+        assert_eq!(parser.mode(), GameMode::MasterSword);
+        assert!(parser.flush().is_empty());
+    }
 }
