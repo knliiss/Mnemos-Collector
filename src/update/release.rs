@@ -97,7 +97,10 @@ impl ReleaseClient {
         Ok(Self { http, config })
     }
 
-    pub async fn check(&self, current_version: CollectorVersion) -> Result<Option<UpdateCandidate>> {
+    pub async fn check(
+        &self,
+        current_version: CollectorVersion,
+    ) -> Result<Option<UpdateCandidate>> {
         let response = self
             .http
             .get(&self.config.manifest_url)
@@ -190,16 +193,8 @@ impl ReleaseClient {
         Ok(staged_path)
     }
 
-    pub fn rollout_delay(
-        &self,
-        collector_id: Uuid,
-        version: CollectorVersion,
-    ) -> Duration {
-        deterministic_rollout_delay(
-            collector_id,
-            version,
-            self.config.rollout_window,
-        )
+    pub fn rollout_delay(&self, collector_id: Uuid, version: CollectorVersion) -> Duration {
+        deterministic_rollout_delay(collector_id, version, self.config.rollout_window)
     }
 }
 
@@ -379,8 +374,7 @@ mod tests {
     const TEST_PUBLIC_KEY: &str = "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=";
     const TEST_SIGNATURE: &str =
         "vzGIQpq6CybNm5M9wZ0Us6zA82mwxGObNm2yx1kNAzgmyk+xAfPdnBY4eVg8bp9ue/O4SB4WFgqZvqh4CIhrBg==";
-    const TEST_SHA256: &str =
-        "b2e64f429b4ede4f8873ae95cc9e31fcc21905da23acd0d42bb47c48db1e0acb";
+    const TEST_SHA256: &str = "b2e64f429b4ede4f8873ae95cc9e31fcc21905da23acd0d42bb47c48db1e0acb";
 
     #[test]
     fn verifies_signed_release_metadata() {
