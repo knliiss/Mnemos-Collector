@@ -96,13 +96,18 @@ impl PendingProvisioningStore {
     }
 }
 
-pub fn validate_access_key(access_key: &str) -> Result<()> {
-    let Some((credential_id, secret)) = access_key.split_once('.') else {
-        bail!("collector access key has an invalid format");
-    };
+pub fn credential_id_from_access_key(access_key: &str) -> Result<Uuid> {
+    let (credential_id, secret) = split_access_key(access_key)?;
 
-    Uuid::parse_str(credential_id).context("collector credential id is not a UUID")?;
-    validate_secret(secret)
+    validate_secret(secret)?;
+
+    Uuid::parse_str(credential_id).context("collector credential id is not a UUID")
+}
+
+pub fn validate_access_key(access_key: &str) -> Result<()> {
+    credential_id_from_access_key(access_key)?;
+
+    Ok(())
 }
 
 pub fn validate_secret(secret: &str) -> Result<()> {
@@ -117,6 +122,12 @@ pub fn validate_secret(secret: &str) -> Result<()> {
     Ok(())
 }
 
+fn split_access_key(access_key: &str) -> Result<(&str, &str)> {
+    access_key
+        .split_once('.')
+        .context("collector access key has an invalid format")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,6 +138,19 @@ mod tests {
             "019c1129-ef54-7000-8000-000000000220.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmno12";
 
         assert!(validate_access_key(key).is_ok());
+    }
+
+    #[test]
+    fn extracts_credential_id_from_access_key() {
+        let key =
+            "019c1129-ef54-7000-8000-000000000220.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmno12";
+
+        let credential_id = credential_id_from_access_key(key).unwrap();
+
+        assert_eq!(
+            credential_id,
+            Uuid::parse_str("019c1129-ef54-7000-8000-000000000220").unwrap()
+        );
     }
 
     #[test]
