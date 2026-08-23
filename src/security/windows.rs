@@ -90,13 +90,15 @@ pub fn delete(target: &str) -> Result<()> {
 }
 
 fn decode_password_blob(bytes: &[u8]) -> Result<String> {
-    if !bytes.len().is_multiple_of(2) {
+    let (pairs, remainder) = bytes.as_chunks::<2>();
+
+    if !remainder.is_empty() {
         bail!("Windows credential password blob has an invalid UTF-16 length");
     }
 
-    let password = bytes
-        .chunks_exact(2)
-        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+    let password = pairs
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .collect::<Vec<_>>();
 
     String::from_utf16(&password).context("Windows credential password blob is not valid UTF-16")
