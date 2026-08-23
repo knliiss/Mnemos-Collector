@@ -39,6 +39,7 @@ pub struct CollectorApplication {
     realtime_config: RealtimeConfig,
     process_detector: CristalixProcessDetector,
     process_running: bool,
+    process_log_candidates: Vec<PathBuf>,
     next_process_check: Instant,
     parser: LogParser,
     deduplicator: EventDeduplicator,
@@ -71,6 +72,7 @@ impl CollectorApplication {
             realtime_config: RealtimeConfig::default(),
             process_detector: CristalixProcessDetector::default(),
             process_running: false,
+            process_log_candidates: Vec::new(),
             next_process_check: now,
             parser: LogParser::default(),
             deduplicator: EventDeduplicator::new(Duration::from_secs(2)),
@@ -128,15 +130,33 @@ impl CollectorApplication {
 
         self.next_process_check = now + self.config.process_check_interval;
 
-        let running = self.process_detector.is_running();
+        let snapshot = self.process_detector.inspect();
+        let candidates_changed = snapshot.latest_log_candidates != self.process_log_candidates;
 
-        if running == self.process_running {
+        self.process_log_candidates = snapshot.latest_log_candidates;
+
+        let tailer_points_to_running_process = self.tailer.as_ref().is_none_or(|tailer| {
+            self.process_log_candidates.is_empty()
+                || self
+                    .process_log_candidates
+                    .iter()
+                    .any(|candidate| candidate == tailer.path())
+        });
+
+        if candidates_changed && !tailer_points_to_running_process {
+            self.parser = LogParser::default();
+            self.tailer = None;
+            self.cached_log_path = None;
+            self.pause_connection().await;
+        }
+
+        if snapshot.running == self.process_running {
             return Ok(());
         }
 
-        self.process_running = running;
+        self.process_running = snapshot.running;
 
-        if running {
+        if snapshot.running {
             self.parser = LogParser::default();
             self.tailer = None;
             return Ok(());
@@ -157,7 +177,10 @@ impl CollectorApplication {
             return Ok(());
         }
 
-        let Some(path) = discover_latest_log(self.cached_log_path.as_deref()) else {
+        let Some(path) = discover_latest_log(
+            self.cached_log_path.as_deref(),
+            &self.process_log_candidates,
+        ) else {
             return Ok(());
         };
 
@@ -176,19 +199,34 @@ impl CollectorApplication {
     }
 
     async fn read_log(&mut self) -> Result<()> {
-        let Some(tailer) = self.tailer.as_mut() else {
-            return Ok(());
+        let read_result = {
+            let Some(tailer) = self.tailer.as_mut() else {
+                return Ok(());
+            };
+            let generation = tailer.generation();
+
+            tailer
+                .read_new_lines()
+                .await
+                .map(|lines| (lines, tailer.generation() != generation))
         };
 
-        let lines = match tailer.read_new_lines().await {
-            Ok(lines) => lines,
+        let (lines, source_reset) = match read_result {
+            Ok(result) => result,
             Err(_) => {
+                self.parser = LogParser::default();
                 self.tailer = None;
                 self.cached_log_path = None;
                 self.pause_connection().await;
                 return Ok(());
             }
         };
+
+        if source_reset {
+            self.parser = LogParser::default();
+            self.pause_connection().await;
+            return Ok(());
+        }
 
         for line in lines {
             let previous_mode = self.parser.mode();

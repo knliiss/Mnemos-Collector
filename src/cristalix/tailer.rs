@@ -2,20 +2,25 @@ use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use same_file::Handle;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 #[derive(Debug)]
 pub struct LogTailer {
     path: PathBuf,
+    identity: Handle,
     file: File,
     offset: u64,
     pending: Vec<u8>,
+    generation: u64,
 }
 
 impl LogTailer {
     pub async fn open_from_end(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
+        let identity = Handle::from_path(&path)
+            .with_context(|| format!("failed to identify {}", path.display()))?;
         let mut file = File::open(&path)
             .await
             .with_context(|| format!("failed to open {}", path.display()))?;
@@ -26,9 +31,11 @@ impl LogTailer {
 
         Ok(Self {
             path,
+            identity,
             file,
             offset,
             pending: Vec::new(),
+            generation: 0,
         })
     }
 
@@ -36,7 +43,19 @@ impl LogTailer {
         &self.path
     }
 
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub async fn read_new_lines(&mut self) -> Result<Vec<String>> {
+        let current_identity = Handle::from_path(&self.path)
+            .with_context(|| format!("failed to identify {}", self.path.display()))?;
+
+        if current_identity != self.identity {
+            self.reopen_from_end().await?;
+            return Ok(Vec::new());
+        }
+
         let current_size = self
             .file
             .metadata()
@@ -72,6 +91,8 @@ impl LogTailer {
     }
 
     async fn reopen_from_end(&mut self) -> Result<()> {
+        let identity = Handle::from_path(&self.path)
+            .with_context(|| format!("failed to identify {}", self.path.display()))?;
         let mut file = File::open(&self.path)
             .await
             .with_context(|| format!("failed to reopen {}", self.path.display()))?;
@@ -80,9 +101,11 @@ impl LogTailer {
             .await
             .with_context(|| format!("failed to seek {}", self.path.display()))?;
 
+        self.identity = identity;
         self.file = file;
         self.offset = offset;
         self.pending.clear();
+        self.generation = self.generation.saturating_add(1);
 
         Ok(())
     }
@@ -106,5 +129,95 @@ impl LogTailer {
         }
 
         lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::fs::{self, OpenOptions};
+    use tokio::io::AsyncWriteExt;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn starts_at_end_and_only_reads_new_complete_lines() {
+        let directory = std::env::temp_dir().join(format!("mnemos-tail-{}", Uuid::now_v7()));
+        let path = directory.join("latest.log");
+
+        fs::create_dir_all(&directory).await.unwrap();
+        fs::write(&path, b"historical\n").await.unwrap();
+
+        let mut tailer = LogTailer::open_from_end(&path).await.unwrap();
+        let mut writer = OpenOptions::new().append(true).open(&path).await.unwrap();
+
+        writer.write_all(b"fresh-one\nfresh").await.unwrap();
+        writer.flush().await.unwrap();
+
+        assert_eq!(tailer.read_new_lines().await.unwrap(), vec!["fresh-one"]);
+        assert_eq!(tailer.generation(), 0);
+
+        writer.write_all(b"-two\n").await.unwrap();
+        writer.flush().await.unwrap();
+
+        assert_eq!(tailer.read_new_lines().await.unwrap(), vec!["fresh-two"]);
+        assert_eq!(tailer.generation(), 0);
+
+        let _ = fs::remove_dir_all(directory).await;
+    }
+
+    #[tokio::test]
+    async fn truncation_reopens_at_new_end_without_replaying_rewritten_content() {
+        let directory = std::env::temp_dir().join(format!("mnemos-tail-{}", Uuid::now_v7()));
+        let path = directory.join("latest.log");
+
+        fs::create_dir_all(&directory).await.unwrap();
+        fs::write(&path, b"historical-content-that-is-long\n")
+            .await
+            .unwrap();
+
+        let mut tailer = LogTailer::open_from_end(&path).await.unwrap();
+
+        fs::write(&path, b"new-session\n").await.unwrap();
+
+        assert!(tailer.read_new_lines().await.unwrap().is_empty());
+        assert_eq!(tailer.generation(), 1);
+
+        let mut writer = OpenOptions::new().append(true).open(&path).await.unwrap();
+        writer.write_all(b"fresh-event\n").await.unwrap();
+        writer.flush().await.unwrap();
+
+        assert_eq!(tailer.read_new_lines().await.unwrap(), vec!["fresh-event"]);
+
+        let _ = fs::remove_dir_all(directory).await;
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn file_replacement_reopens_at_replacement_end() {
+        let directory = std::env::temp_dir().join(format!("mnemos-tail-{}", Uuid::now_v7()));
+        let path = directory.join("latest.log");
+        let previous = directory.join("previous.log");
+
+        fs::create_dir_all(&directory).await.unwrap();
+        fs::write(&path, b"old-session\n").await.unwrap();
+
+        let mut tailer = LogTailer::open_from_end(&path).await.unwrap();
+
+        fs::rename(&path, &previous).await.unwrap();
+        fs::write(&path, b"replacement-history\n").await.unwrap();
+
+        assert!(tailer.read_new_lines().await.unwrap().is_empty());
+        assert_eq!(tailer.generation(), 1);
+
+        let mut writer = OpenOptions::new().append(true).open(&path).await.unwrap();
+        writer.write_all(b"replacement-fresh\n").await.unwrap();
+        writer.flush().await.unwrap();
+
+        assert_eq!(
+            tailer.read_new_lines().await.unwrap(),
+            vec!["replacement-fresh"]
+        );
+
+        let _ = fs::remove_dir_all(directory).await;
     }
 }
