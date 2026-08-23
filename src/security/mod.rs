@@ -187,6 +187,7 @@ pub fn validate_secret(secret: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn credential_target(account: &str) -> String {
     format!("{account}.{KEYRING_SERVICE}")
 }
