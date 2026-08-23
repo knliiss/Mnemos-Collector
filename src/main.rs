@@ -12,9 +12,7 @@ async fn main() -> Result<()> {
     let arguments = LaunchArguments::parse_environment()?;
 
     if let Some(activation_token) = arguments.activation_token.as_deref() {
-        let device_name = arguments
-            .device_name
-            .unwrap_or_else(default_device_name);
+        let device_name = arguments.device_name.unwrap_or_else(default_device_name);
 
         ProvisioningClient::new()?
             .provision(activation_token, &device_name)
@@ -24,9 +22,7 @@ async fn main() -> Result<()> {
 
     let access_key = CredentialStore
         .load()?
-        .context(
-            "collector is not provisioned; launch it once with --activation-token <TOKEN>",
-        )?;
+        .context("collector is not provisioned; launch it once with --activation-token <TOKEN>")?;
 
     Autostart::ensure_enabled().context("failed to ensure collector autostart")?;
 

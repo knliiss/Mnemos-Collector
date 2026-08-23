@@ -43,10 +43,7 @@ impl LaunchArguments {
     }
 }
 
-fn next_value(
-    arguments: &mut impl Iterator<Item = String>,
-    argument_name: &str,
-) -> Result<String> {
+fn next_value(arguments: &mut impl Iterator<Item = String>, argument_name: &str) -> Result<String> {
     let Some(value) = arguments.next() else {
         bail!("{argument_name} requires a value");
     };
@@ -82,7 +79,10 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(arguments.activation_token.as_deref(), Some("activation-token"));
+        assert_eq!(
+            arguments.activation_token.as_deref(),
+            Some("activation-token")
+        );
         assert_eq!(arguments.device_name.as_deref(), Some("Home PC"));
     }
 
@@ -101,10 +101,7 @@ mod tests {
 
     #[test]
     fn rejects_device_name_without_activation_token() {
-        let result = LaunchArguments::parse([
-            "--device-name".to_owned(),
-            "Home PC".to_owned(),
-        ]);
+        let result = LaunchArguments::parse(["--device-name".to_owned(), "Home PC".to_owned()]);
 
         assert!(result.is_err());
     }
