@@ -204,11 +204,13 @@ fn parse_booster(payload: &str) -> Option<CollectorEvent> {
 }
 
 fn parse_global(payload: &str) -> Option<CollectorEvent> {
-    let event_type = if payload.contains("Тьма наступает с заходом солнца") {
+    let event_type = if payload.contains("Тьма наступает с заходом солнца")
+    {
         GlobalEventType::Darkness
     } else if payload.contains("кровавая луна") {
         GlobalEventType::Moon
-    } else if payload.contains("Небо темнеет и окутывается глубокой тенью") {
+    } else if payload.contains("Небо темнеет и окутывается глубокой тенью")
+    {
         GlobalEventType::Eclipse
     } else if payload.contains("тепло солнца касается вашей кожи") {
         GlobalEventType::Explosion
