@@ -373,10 +373,8 @@ impl CollectorApplication {
             }
         };
 
-        let handoff_result = UpdateHandoff::start(
-            request.staged_executable(),
-            request.expected_sha256(),
-        );
+        let handoff_result =
+            UpdateHandoff::start(request.staged_executable(), request.expected_sha256());
 
         if handoff_result.is_err() {
             coordinator.restore_handoff(request);
