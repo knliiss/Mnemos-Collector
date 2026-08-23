@@ -106,7 +106,9 @@ mod tests {
         .unwrap();
         let normalized = path.to_string_lossy().replace('\\', "/");
 
-        assert!(normalized.ends_with("C:/Users/Player/.cristalix/updates/Minigames/logs/latest.log"));
+        assert!(
+            normalized.ends_with("C:/Users/Player/.cristalix/updates/Minigames/logs/latest.log")
+        );
     }
 
     #[test]
