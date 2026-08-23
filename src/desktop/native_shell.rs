@@ -6,8 +6,7 @@ use anyhow::{Context, Result};
 use tokio::runtime::Handle;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Dwm::{
-    DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
-    DwmSetWindowAttribute,
+    DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute,
 };
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, InvalidateRect, PAINTSTRUCT,
@@ -789,14 +788,7 @@ unsafe fn create_log_edit(hwnd: HWND, instance: *mut c_void, font: *mut c_void) 
 
 unsafe fn move_control(hwnd: HWND, rect: view::UiRect) {
     unsafe {
-        MoveWindow(
-            hwnd,
-            rect.left,
-            rect.top,
-            rect.width(),
-            rect.height(),
-            1,
-        );
+        MoveWindow(hwnd, rect.left, rect.top, rect.width(), rect.height(), 1);
     }
 }
 
