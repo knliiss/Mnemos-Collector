@@ -1,9 +1,11 @@
 use anyhow::{Context, Result, bail};
 use keyring::{Entry, Error as KeyringError};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 const KEYRING_SERVICE: &str = "mnemos-collector";
-const KEYRING_ACCOUNT: &str = "collector-access-key";
+const ACCESS_KEY_ACCOUNT: &str = "collector-access-key";
+const PENDING_PROVISIONING_ACCOUNT: &str = "pending-provisioning";
 const SECRET_LENGTH: usize = 43;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -11,7 +13,7 @@ pub struct CredentialStore;
 
 impl CredentialStore {
     pub fn load(self) -> Result<Option<String>> {
-        let entry = Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        let entry = Entry::new(KEYRING_SERVICE, ACCESS_KEY_ACCOUNT)
             .context("failed to open the operating-system credential store")?;
 
         match entry.get_password() {
@@ -27,10 +29,67 @@ impl CredentialStore {
     pub fn save(self, access_key: &str) -> Result<()> {
         validate_access_key(access_key)?;
 
-        Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        Entry::new(KEYRING_SERVICE, ACCESS_KEY_ACCOUNT)
             .context("failed to open the operating-system credential store")?
             .set_password(access_key)
             .context("failed to save collector access key")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingProvisioningSecret {
+    pub activation_hash: String,
+    pub secret: String,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PendingProvisioningStore;
+
+impl PendingProvisioningStore {
+    pub fn load(self) -> Result<Option<PendingProvisioningSecret>> {
+        let entry = Entry::new(KEYRING_SERVICE, PENDING_PROVISIONING_ACCOUNT)
+            .context("failed to open the operating-system credential store")?;
+
+        let encoded = match entry.get_password() {
+            Ok(encoded) => encoded,
+            Err(KeyringError::NoEntry) => return Ok(None),
+            Err(error) => return Err(error).context("failed to read pending provisioning secret"),
+        };
+        let pending: PendingProvisioningSecret =
+            serde_json::from_str(&encoded).context("pending provisioning secret is corrupted")?;
+
+        validate_secret(&pending.secret)?;
+
+        if pending.activation_hash.len() != 64
+            || !pending.activation_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            bail!("pending provisioning activation hash has an invalid format");
+        }
+
+        Ok(Some(pending))
+    }
+
+    pub fn save(self, pending: &PendingProvisioningSecret) -> Result<()> {
+        validate_secret(&pending.secret)?;
+
+        let encoded =
+            serde_json::to_string(pending).context("failed to encode pending provisioning secret")?;
+
+        Entry::new(KEYRING_SERVICE, PENDING_PROVISIONING_ACCOUNT)
+            .context("failed to open the operating-system credential store")?
+            .set_password(&encoded)
+            .context("failed to save pending provisioning secret")
+    }
+
+    pub fn clear(self) -> Result<()> {
+        let entry = Entry::new(KEYRING_SERVICE, PENDING_PROVISIONING_ACCOUNT)
+            .context("failed to open the operating-system credential store")?;
+
+        match entry.delete_credential() {
+            Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
+            Err(error) => Err(error).context("failed to clear pending provisioning secret"),
+        }
     }
 }
 
@@ -40,7 +99,10 @@ pub fn validate_access_key(access_key: &str) -> Result<()> {
     };
 
     Uuid::parse_str(credential_id).context("collector credential id is not a UUID")?;
+    validate_secret(secret)
+}
 
+pub fn validate_secret(secret: &str) -> Result<()> {
     if secret.len() != SECRET_LENGTH
         || !secret
             .bytes()
