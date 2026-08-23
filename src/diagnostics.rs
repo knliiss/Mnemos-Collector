@@ -10,7 +10,7 @@ use directories::ProjectDirs;
 
 const MAX_VISIBLE_LOG_LINES: usize = 600;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeSnapshot {
     pub cristalix_running: bool,
     pub game_mode: String,
