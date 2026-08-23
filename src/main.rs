@@ -44,7 +44,10 @@ async fn run() -> Result<()> {
             .as_deref()
             .context("collector installation requires an activation token")?;
 
-        diagnostics::info("installation", "Installing Collector into the stable per-user location");
+        diagnostics::info(
+            "installation",
+            "Installing Collector into the stable per-user location",
+        );
 
         Installation::install_and_launch(activation_token, arguments.device_name.as_deref())
             .context("failed to install Mnemos Collector")?;
@@ -67,7 +70,10 @@ async fn run() -> Result<()> {
             .clone()
             .unwrap_or_else(default_device_name);
 
-        diagnostics::info("provisioning", "Provisioning Collector from command-line activation token");
+        diagnostics::info(
+            "provisioning",
+            "Provisioning Collector from command-line activation token",
+        );
 
         ProvisioningClient::new()?
             .provision(activation_token, &device_name)
@@ -78,7 +84,10 @@ async fn run() -> Result<()> {
     let access_key = CredentialStore.load()?;
 
     if !current_installation && access_key.is_some() {
-        diagnostics::info("installation", "Migrating provisioned Collector into stable installation");
+        diagnostics::info(
+            "installation",
+            "Migrating provisioned Collector into stable installation",
+        );
 
         Installation::migrate_existing_and_launch()
             .context("failed to migrate collector to stable installation")?;

@@ -49,8 +49,12 @@ impl CredentialStore {
 
         #[cfg(target_os = "windows")]
         {
-            return windows::save(&credential_target(ACCESS_KEY_ACCOUNT), access_key)
-                .context("failed to save collector access key");
+            return windows::save(
+                &credential_target(ACCESS_KEY_ACCOUNT),
+                ACCESS_KEY_ACCOUNT,
+                access_key,
+            )
+            .context("failed to save collector access key");
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -120,8 +124,12 @@ impl PendingProvisioningStore {
 
         #[cfg(target_os = "windows")]
         {
-            return windows::save(&credential_target(PENDING_PROVISIONING_ACCOUNT), &encoded)
-                .context("failed to save pending provisioning secret");
+            return windows::save(
+                &credential_target(PENDING_PROVISIONING_ACCOUNT),
+                PENDING_PROVISIONING_ACCOUNT,
+                &encoded,
+            )
+            .context("failed to save pending provisioning secret");
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -180,7 +188,7 @@ pub fn validate_secret(secret: &str) -> Result<()> {
 }
 
 fn credential_target(account: &str) -> String {
-    format!("{KEYRING_SERVICE}:{account}")
+    format!("{account}.{KEYRING_SERVICE}")
 }
 
 fn split_access_key(access_key: &str) -> Result<(&str, &str)> {
@@ -192,6 +200,14 @@ fn split_access_key(access_key: &str) -> Result<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_credential_target_matches_keyring_native_mapping() {
+        assert_eq!(
+            credential_target(ACCESS_KEY_ACCOUNT),
+            "collector-access-key.mnemos-collector"
+        );
+    }
 
     #[test]
     fn validates_server_access_key_format() {

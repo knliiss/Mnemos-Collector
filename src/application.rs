@@ -332,7 +332,10 @@ impl CollectorApplication {
         };
 
         if source_reset {
-            let path = self.tailer.as_ref().map(|tailer| tailer.path().to_path_buf());
+            let path = self
+                .tailer
+                .as_ref()
+                .map(|tailer| tailer.path().to_path_buf());
 
             diagnostics::debug(
                 "cristalix",
@@ -530,7 +533,10 @@ impl CollectorApplication {
                 return false;
             }
             Err(error) => {
-                diagnostics::debug("update", format!("Update poll deferred after error: {error:#}"));
+                diagnostics::debug(
+                    "update",
+                    format!("Update poll deferred after error: {error:#}"),
+                );
                 coordinator.defer_after_error();
                 self.update_coordinator = Some(coordinator);
 

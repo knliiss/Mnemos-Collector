@@ -16,15 +16,15 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreatePopupMenu,
     CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL,
-    ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, GetClientRect, GetCursorPos, GetMessageW,
-    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, GWLP_USERDATA, IDC_ARROW,
+    ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, GWLP_USERDATA, GetClientRect, GetCursorPos,
+    GetMessageW, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW,
     IDI_APPLICATION, InvalidateRect, LoadCursorW, LoadIconW, MF_STRING, MSG, MessageBoxW,
     MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED, SW_HIDE, SW_RESTORE,
     SW_SHOW, SendMessageW, SetFocus, SetForegroundWindow, SetTimer, SetWindowLongPtrW,
     SetWindowTextW, ShowWindow, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TrackPopupMenu, TranslateMessage,
     UpdateWindow, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLOR_EDIT, WM_DESTROY, WM_LBUTTONUP,
-    WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_SIZE, WM_TIMER, WM_VSCROLL, WNDCLASSW,
-    WS_CHILD, WS_HSCROLL, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
+    WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD,
+    WS_HSCROLL, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
 };
 use zeroize::Zeroizing;
 
@@ -34,8 +34,8 @@ use crate::platform::{Autostart, Installation};
 use crate::provisioning::{ProvisioningClient, default_device_name};
 use crate::security::CredentialStore;
 
-use super::mascot;
 use super::DesktopLaunchContext;
+use super::mascot;
 
 const CLASS_NAME: &str = "MnemosCollectorWindow";
 const WINDOW_TITLE: &str = "Mnemos Collector";
@@ -52,7 +52,6 @@ const COLOR_CARD: u32 = 0x00111411;
 const COLOR_CARD_ALT: u32 = 0x00161b13;
 const COLOR_BORDER: u32 = 0x00303a23;
 const COLOR_ACCENT: u32 = 0x002fffbe;
-const COLOR_ACCENT_DARK: u32 = 0x001f4820;
 const COLOR_TEXT: u32 = 0x00f1f4ee;
 const COLOR_MUTED: u32 = 0x00949d91;
 const COLOR_DANGER: u32 = 0x006b6bff;
@@ -87,7 +86,8 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
         let instance = GetModuleHandleW(null());
 
         if instance.is_null() {
-            return Err(io::Error::last_os_error()).context("failed to get collector module handle");
+            return Err(io::Error::last_os_error())
+                .context("failed to get collector module handle");
         }
 
         let class_name = wide(CLASS_NAME);
@@ -205,15 +205,12 @@ impl DesktopWindow {
         let segoe = wide("Segoe UI");
         let mono = wide("Cascadia Mono");
 
-        self.ui_font = unsafe {
-            CreateFontW(-18, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, segoe.as_ptr())
-        };
-        self.title_font = unsafe {
-            CreateFontW(-30, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, segoe.as_ptr())
-        };
-        self.mono_font = unsafe {
-            CreateFontW(-16, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, mono.as_ptr())
-        };
+        self.ui_font =
+            unsafe { CreateFontW(-18, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, segoe.as_ptr()) };
+        self.title_font =
+            unsafe { CreateFontW(-30, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, segoe.as_ptr()) };
+        self.mono_font =
+            unsafe { CreateFontW(-16, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, mono.as_ptr()) };
         self.edit_brush = unsafe { CreateSolidBrush(COLOR_CARD_ALT) };
 
         self.token_edit = create_edit(hwnd, instance, false, self.ui_font);
@@ -221,7 +218,8 @@ impl DesktopWindow {
         self.logs_edit = create_edit(hwnd, instance, true, self.mono_font);
 
         if self.token_edit.is_null() || self.device_edit.is_null() || self.logs_edit.is_null() {
-            return Err(io::Error::last_os_error()).context("failed to create collector UI controls");
+            return Err(io::Error::last_os_error())
+                .context("failed to create collector UI controls");
         }
 
         let device_name = wide(&default_device_name());
@@ -315,6 +313,7 @@ impl DesktopWindow {
         let current_installation = self.current_installation;
         let hwnd_value = hwnd as usize;
         let token = Zeroizing::new(token);
+        let worker_runtime = runtime.clone();
 
         runtime.spawn(async move {
             diagnostics::info("provisioning", "Activation started from desktop UI");
@@ -337,7 +336,7 @@ impl DesktopWindow {
                     }
 
                     if let Some(access_key) = access_key {
-                        spawn_collector(runtime.clone(), access_key, hwnd);
+                        spawn_collector(worker_runtime, access_key, hwnd);
                     }
                 }
                 Err(error) => {
@@ -399,7 +398,11 @@ impl DesktopWindow {
             GetClientRect(hwnd, &mut client);
         }
 
-        let layout = layout(client.right - client.left, client.bottom - client.top, self.provisioned);
+        let layout = layout(
+            client.right - client.left,
+            client.bottom - client.top,
+            self.provisioned,
+        );
 
         unsafe {
             MoveWindow(
@@ -481,7 +484,13 @@ impl DesktopWindow {
             draw_runtime_status(hdc, &runtime, layout.hero, self.ui_font, self.title_font);
             mascot::draw(hdc, layout.hero.right - 175, layout.hero.top + 4, 145);
 
-            draw_button(hdc, layout.tray_button, "Свернуть в трей", false, self.ui_font);
+            draw_button(
+                hdc,
+                layout.tray_button,
+                "Свернуть в трей",
+                false,
+                self.ui_font,
+            );
 
             if let Some(activation) = layout.activation {
                 draw_card(hdc, activation, COLOR_CARD, COLOR_BORDER);
@@ -538,7 +547,14 @@ impl DesktopWindow {
             }
 
             let logs_title_y = layout.logs.top - 38;
-            draw_text(hdc, layout.logs.left, logs_title_y, "Логи Collector", self.title_font, COLOR_TEXT);
+            draw_text(
+                hdc,
+                layout.logs.left,
+                logs_title_y,
+                "Логи Collector",
+                self.title_font,
+                COLOR_TEXT,
+            );
 
             let debug_label = if diagnostics::debug_enabled() {
                 "● Подробная диагностика"
@@ -1017,9 +1033,23 @@ unsafe fn draw_runtime_status(
     };
 
     unsafe {
-        draw_text(hdc, rect.left + 20, rect.top + 18, "СОСТОЯНИЕ", font, COLOR_ACCENT);
+        draw_text(
+            hdc,
+            rect.left + 20,
+            rect.top + 18,
+            "СОСТОЯНИЕ",
+            font,
+            COLOR_ACCENT,
+        );
         draw_text(hdc, rect.left + 20, rect.top + 44, title, title_font, color);
-        draw_text(hdc, rect.left + 20, rect.top + 82, detail, font, COLOR_MUTED);
+        draw_text(
+            hdc,
+            rect.left + 20,
+            rect.top + 82,
+            detail,
+            font,
+            COLOR_MUTED,
+        );
 
         let mode = if runtime.game_mode.is_empty() {
             "Unknown"
@@ -1083,14 +1113,7 @@ unsafe fn draw_button(
     }
 }
 
-unsafe fn draw_text(
-    hdc: *mut c_void,
-    x: i32,
-    y: i32,
-    text: &str,
-    font: *mut c_void,
-    color: u32,
-) {
+unsafe fn draw_text(hdc: *mut c_void, x: i32, y: i32, text: &str, font: *mut c_void, color: u32) {
     let text = text.encode_utf16().collect::<Vec<_>>();
     let old_font = unsafe { SelectObject(hdc, font) };
 
