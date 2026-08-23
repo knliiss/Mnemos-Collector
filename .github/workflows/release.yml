@@ -76,21 +76,25 @@ jobs:
             target: x86_64-unknown-linux-gnu
             platform: linux-x86_64
             asset: mnemos-collector-linux-x86_64
+            installer_asset: mnemos-collector-installer-linux-x86_64
             binary: mnemos-collector
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             platform: windows-x86_64
             asset: mnemos-collector-windows-x86_64.exe
+            installer_asset: mnemos-collector-installer-windows-x86_64.exe
             binary: mnemos-collector.exe
           - os: macos-latest
             target: x86_64-apple-darwin
             platform: macos-x86_64
             asset: mnemos-collector-macos-x86_64
+            installer_asset: mnemos-collector-installer-macos-x86_64
             binary: mnemos-collector
           - os: macos-latest
             target: aarch64-apple-darwin
             platform: macos-aarch64
             asset: mnemos-collector-macos-aarch64
+            installer_asset: mnemos-collector-installer-macos-aarch64
             binary: mnemos-collector
 
     runs-on: ${{ matrix.os }}
@@ -127,12 +131,17 @@ jobs:
           cp \
             "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
             "dist/${{ matrix.asset }}"
+          cp \
+            "dist/${{ matrix.asset }}" \
+            "dist/${{ matrix.installer_asset }}"
 
-      - name: Upload collector artifact
+      - name: Upload collector artifacts
         uses: actions/upload-artifact@v7
         with:
           name: collector-${{ matrix.platform }}
-          path: dist/${{ matrix.asset }}
+          path: |
+            dist/${{ matrix.asset }}
+            dist/${{ matrix.installer_asset }}
           if-no-files-found: error
           retention-days: 7
 
@@ -254,9 +263,13 @@ jobs:
 
           assets=(
             dist/mnemos-collector-linux-x86_64
+            dist/mnemos-collector-installer-linux-x86_64
             dist/mnemos-collector-windows-x86_64.exe
+            dist/mnemos-collector-installer-windows-x86_64.exe
             dist/mnemos-collector-macos-x86_64
+            dist/mnemos-collector-installer-macos-x86_64
             dist/mnemos-collector-macos-aarch64
+            dist/mnemos-collector-installer-macos-aarch64
             dist/manifest.json
           )
 
