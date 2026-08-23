@@ -27,9 +27,7 @@ jobs:
 
       - name: Install Rust
         shell: bash
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
+        run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy
 
       - name: Check formatting
         run: cargo fmt --all -- --check
