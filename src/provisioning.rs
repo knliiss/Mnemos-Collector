@@ -59,11 +59,7 @@ impl ProvisioningClient {
         })
     }
 
-    pub async fn provision(
-        &self,
-        activation_token: &str,
-        device_name: &str,
-    ) -> Result<Uuid> {
+    pub async fn provision(&self, activation_token: &str, device_name: &str) -> Result<Uuid> {
         validate_activation_token(activation_token)?;
         validate_device_name(device_name)?;
 
@@ -97,11 +93,7 @@ impl ProvisioningClient {
             .json()
             .await
             .context("Mnemos returned an invalid collector provisioning response")?;
-        let access_key = Zeroizing::new(format!(
-            "{}.{}",
-            redeemed.credential_id,
-            secret.as_str()
-        ));
+        let access_key = Zeroizing::new(format!("{}.{}", redeemed.credential_id, secret.as_str()));
 
         validate_access_key(access_key.as_str())?;
         self.credential_store
@@ -140,8 +132,7 @@ pub fn default_device_name() -> String {
     let normalized: String = raw
         .chars()
         .filter(|character| {
-            character.is_alphanumeric()
-                || matches!(character, ' ' | '.' | '_' | '-')
+            character.is_alphanumeric() || matches!(character, ' ' | '.' | '_' | '-')
         })
         .take(48)
         .collect();
@@ -184,9 +175,10 @@ fn validate_device_name(device_name: &str) -> Result<()> {
         bail!("collector device name must contain between 1 and 48 characters");
     }
 
-    if !trimmed.chars().all(|character| {
-        character.is_alphanumeric() || matches!(character, ' ' | '.' | '_' | '-')
-    }) {
+    if !trimmed
+        .chars()
+        .all(|character| character.is_alphanumeric() || matches!(character, ' ' | '.' | '_' | '-'))
+    {
         bail!("collector device name contains unsupported characters");
     }
 
@@ -239,10 +231,7 @@ mod tests {
 
     #[test]
     fn validates_activation_token_shape() {
-        assert!(
-            validate_activation_token("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq")
-                .is_ok()
-        );
+        assert!(validate_activation_token("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq").is_ok());
         assert!(validate_activation_token("short").is_err());
     }
 
