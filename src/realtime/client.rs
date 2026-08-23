@@ -1,18 +1,21 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use chrono::{DateTime, Utc};
+use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use tokio::net::TcpStream;
+use tokio::sync::{Mutex, mpsc};
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
-use uuid::Uuid;
 
-use crate::protocol::{CollectorEvent, CollectorStateMessage, EventReport, ObservationState};
+use crate::protocol::{CollectorStateMessage, EventReport, ObservationState};
 use crate::realtime::response::ServerMessage;
 
 pub const COLLECTOR_PROTOCOL_VERSION: u16 = 1;
@@ -20,6 +23,11 @@ pub const COLLECTOR_PROTOCOL_VERSION: u16 = 1;
 const VERSION_HEADER: HeaderName = HeaderName::from_static("x-mnemos-collector-version");
 const PROTOCOL_HEADER: HeaderName = HeaderName::from_static("x-mnemos-collector-protocol");
 const PLATFORM_HEADER: HeaderName = HeaderName::from_static("x-mnemos-collector-platform");
+const INBOUND_BUFFER: usize = 32;
+
+type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type SocketWriter = SplitSink<Socket, Message>;
+type SocketReader = SplitStream<Socket>;
 
 #[derive(Debug, Clone)]
 pub struct RealtimeConfig {
@@ -36,9 +44,19 @@ impl Default for RealtimeConfig {
     }
 }
 
+#[derive(Debug)]
+enum InboundEvent {
+    Message(ServerMessage),
+    Failed(String),
+}
+
 pub struct RealtimeClient {
-    socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    writer: Arc<Mutex<SocketWriter>>,
+    inbound: mpsc::Receiver<InboundEvent>,
+    alive: Arc<AtomicBool>,
+    reader_task: JoinHandle<()>,
     response_timeout: Duration,
+    acknowledged_state: Option<ObservationState>,
 }
 
 impl RealtimeClient {
@@ -69,38 +87,59 @@ impl RealtimeClient {
         let (socket, _) = connect_async(request)
             .await
             .context("failed to connect to Mnemos realtime-service")?;
+        let (writer, reader) = socket.split();
+        let writer = Arc::new(Mutex::new(writer));
+        let alive = Arc::new(AtomicBool::new(true));
+        let (inbound_sender, inbound) = mpsc::channel(INBOUND_BUFFER);
+        let reader_task = tokio::spawn(read_loop(
+            reader,
+            Arc::clone(&writer),
+            inbound_sender,
+            Arc::clone(&alive),
+        ));
 
         Ok(Self {
-            socket,
+            writer,
+            inbound,
+            alive,
+            reader_task,
             response_timeout: config.response_timeout,
+            acknowledged_state: None,
         })
     }
 
-    pub async fn report(
-        &mut self,
-        event: CollectorEvent,
-        observed_at: DateTime<Utc>,
-    ) -> Result<Uuid> {
+    pub fn is_connected(&self) -> bool {
+        self.alive.load(Ordering::Acquire)
+    }
+
+    pub async fn report(&mut self, report: &EventReport) -> Result<()> {
         self.set_state(ObservationState::Observing).await?;
-
-        let report = EventReport::new(event, observed_at);
-        let message_id = report.message_id;
-
-        self.send_json(&report).await?;
-        self.wait_for_report_queued(message_id).await?;
-
-        Ok(message_id)
+        self.send_json(report).await?;
+        self.wait_for_report_queued(report.message_id).await
     }
 
     pub async fn pause(&mut self) -> Result<()> {
+        if self.acknowledged_state == Some(ObservationState::Paused) {
+            return Ok(());
+        }
+
         self.set_state(ObservationState::Paused).await
     }
 
     pub async fn close(mut self) -> Result<()> {
-        self.socket
-            .close(None)
+        self.alive.store(false, Ordering::Release);
+
+        let result = self
+            .writer
+            .lock()
             .await
-            .context("failed to close realtime WebSocket")
+            .close()
+            .await
+            .context("failed to close realtime WebSocket");
+
+        self.reader_task.abort();
+
+        result
     }
 
     async fn set_state(&mut self, expected: ObservationState) -> Result<()> {
@@ -115,6 +154,7 @@ impl RealtimeClient {
             loop {
                 match self.next_server_message().await? {
                     ServerMessage::CollectorStateUpdated { state, .. } if state == expected => {
+                        self.acknowledged_state = Some(state);
                         return Ok(());
                     }
                     ServerMessage::Error { code, message } => {
@@ -128,7 +168,7 @@ impl RealtimeClient {
         .map_err(|_| anyhow!("timed out waiting for collector state acknowledgement"))?
     }
 
-    async fn wait_for_report_queued(&mut self, expected_message_id: Uuid) -> Result<()> {
+    async fn wait_for_report_queued(&mut self, expected_message_id: uuid::Uuid) -> Result<()> {
         timeout(self.response_timeout, async {
             loop {
                 match self.next_server_message().await? {
@@ -148,41 +188,96 @@ impl RealtimeClient {
         .map_err(|_| anyhow!("timed out waiting for report acknowledgement"))?
     }
 
-    async fn send_json(&mut self, payload: &impl Serialize) -> Result<()> {
+    async fn send_json(&self, payload: &impl Serialize) -> Result<()> {
+        if !self.is_connected() {
+            bail!("realtime WebSocket is not connected");
+        }
+
         let json =
             serde_json::to_string(payload).context("failed to serialize collector message")?;
 
-        self.socket
+        self.writer
+            .lock()
+            .await
             .send(Message::Text(json.into()))
             .await
             .context("failed to send collector message")
     }
 
     async fn next_server_message(&mut self) -> Result<ServerMessage> {
-        loop {
-            let message = self
-                .socket
-                .next()
-                .await
-                .ok_or_else(|| anyhow!("realtime WebSocket closed"))?
-                .context("realtime WebSocket transport failed")?;
-
-            match message {
-                Message::Text(payload) => {
-                    return serde_json::from_str(payload.as_str())
-                        .context("realtime-service returned an invalid collector message");
-                }
-                Message::Ping(payload) => {
-                    self.socket
-                        .send(Message::Pong(payload))
-                        .await
-                        .context("failed to answer realtime heartbeat")?;
-                }
-                Message::Close(frame) => {
-                    bail!("realtime-service closed collector connection: {frame:?}");
-                }
-                Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {}
-            }
+        match self.inbound.recv().await {
+            Some(InboundEvent::Message(message)) => Ok(message),
+            Some(InboundEvent::Failed(message)) => bail!("realtime WebSocket failed: {message}"),
+            None => bail!("realtime WebSocket reader stopped"),
         }
     }
+}
+
+impl Drop for RealtimeClient {
+    fn drop(&mut self) {
+        self.alive.store(false, Ordering::Release);
+        self.reader_task.abort();
+    }
+}
+
+async fn read_loop(
+    mut reader: SocketReader,
+    writer: Arc<Mutex<SocketWriter>>,
+    inbound: mpsc::Sender<InboundEvent>,
+    alive: Arc<AtomicBool>,
+) {
+    while let Some(result) = reader.next().await {
+        let message = match result {
+            Ok(message) => message,
+            Err(error) => {
+                send_failure(&inbound, error.to_string()).await;
+                break;
+            }
+        };
+
+        match message {
+            Message::Text(payload) => {
+                let parsed = serde_json::from_str::<ServerMessage>(payload.as_str());
+
+                match parsed {
+                    Ok(message) => {
+                        if inbound.send(InboundEvent::Message(message)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        send_failure(
+                            &inbound,
+                            format!("realtime-service returned an invalid message: {error}"),
+                        )
+                        .await;
+                        break;
+                    }
+                }
+            }
+            Message::Ping(payload) => {
+                let result = writer.lock().await.send(Message::Pong(payload)).await;
+
+                if let Err(error) = result {
+                    send_failure(&inbound, format!("failed to answer heartbeat: {error}")).await;
+                    break;
+                }
+            }
+            Message::Close(frame) => {
+                send_failure(
+                    &inbound,
+                    format!("realtime-service closed collector connection: {frame:?}"),
+                )
+                .await;
+                break;
+            }
+            Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {}
+        }
+    }
+
+    alive.store(false, Ordering::Release);
+}
+
+async fn send_failure(inbound: &mpsc::Sender<InboundEvent>, message: String) {
+    let _ = inbound.send(InboundEvent::Failed(message)).await;
 }

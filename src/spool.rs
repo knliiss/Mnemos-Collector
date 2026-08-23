@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
-use crate::protocol::CollectorEvent;
+use crate::protocol::{CollectorEvent, EventReport};
 
 const SPOOL_FILE_NAME: &str = "pending-reports.json";
 const DEFAULT_CAPACITY: usize = 1_024;
@@ -29,6 +29,14 @@ impl PendingReport {
             observed_at,
             event,
         }
+    }
+
+    pub fn to_event_report(&self) -> EventReport {
+        EventReport::with_message_id(
+            self.message_id,
+            self.event.clone(),
+            self.observed_at,
+        )
     }
 }
 
@@ -169,10 +177,16 @@ impl ReportSpool {
 }
 
 async fn load_snapshot(path: &Path) -> Result<VecDeque<PendingReport>> {
-    for candidate in [path.to_path_buf(), temporary_path(path), backup_path(path)] {
+    let candidates = [path.to_path_buf(), temporary_path(path), backup_path(path)];
+    let mut found_snapshot = false;
+    let mut last_error = None;
+
+    for candidate in candidates {
         if !fs::try_exists(&candidate).await? {
             continue;
         }
+
+        found_snapshot = true;
 
         let content = fs::read(&candidate)
             .await
@@ -180,16 +194,24 @@ async fn load_snapshot(path: &Path) -> Result<VecDeque<PendingReport>> {
 
         match serde_json::from_slice(&content) {
             Ok(reports) => return Ok(reports),
-            Err(error) if candidate != backup_path(path) => {
-                let _ = error;
-            }
             Err(error) => {
-                return Err(error).context("all available report spool snapshots are invalid");
+                last_error = Some((candidate, error));
             }
         }
     }
 
-    Ok(VecDeque::new())
+    if !found_snapshot {
+        return Ok(VecDeque::new());
+    }
+
+    let (candidate, error) = last_error.context("report spool snapshot was present but unreadable")?;
+
+    Err(anyhow!(error)).with_context(|| {
+        format!(
+            "all available report spool snapshots are invalid; last invalid snapshot was {}",
+            candidate.display()
+        )
+    })
 }
 
 fn temporary_path(path: &Path) -> PathBuf {
@@ -247,6 +269,39 @@ mod tests {
         spool.enqueue(report()).await.unwrap();
         assert!(spool.enqueue(report()).await.is_err());
         assert_eq!(spool.len(), 1);
+
+        let _ = fs::remove_dir_all(directory).await;
+    }
+
+    #[tokio::test]
+    async fn recovers_from_a_valid_backup_when_primary_is_corrupted() {
+        let directory = std::env::temp_dir().join(format!("mnemos-spool-{}", Uuid::now_v7()));
+        let path = directory.join("pending-reports.json");
+        let backup = backup_path(&path);
+        let pending = report();
+        let encoded = serde_json::to_vec(&VecDeque::from([pending.clone()])).unwrap();
+
+        fs::create_dir_all(&directory).await.unwrap();
+        fs::write(&path, b"not-json").await.unwrap();
+        fs::write(&backup, encoded).await.unwrap();
+
+        let spool = ReportSpool::open(&path, 8).await.unwrap();
+
+        assert_eq!(spool.len(), 1);
+        assert_eq!(spool.front(), Some(&pending));
+
+        let _ = fs::remove_dir_all(directory).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_corrupted_snapshots_instead_of_treating_them_as_empty() {
+        let directory = std::env::temp_dir().join(format!("mnemos-spool-{}", Uuid::now_v7()));
+        let path = directory.join("pending-reports.json");
+
+        fs::create_dir_all(&directory).await.unwrap();
+        fs::write(&path, b"not-json").await.unwrap();
+
+        assert!(ReportSpool::open(&path, 8).await.is_err());
 
         let _ = fs::remove_dir_all(directory).await;
     }

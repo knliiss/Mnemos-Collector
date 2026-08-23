@@ -85,9 +85,17 @@ pub struct EventReport {
 
 impl EventReport {
     pub fn new(event: CollectorEvent, observed_at: DateTime<Utc>) -> Self {
+        Self::with_message_id(Uuid::now_v7(), event, observed_at)
+    }
+
+    pub fn with_message_id(
+        message_id: Uuid,
+        event: CollectorEvent,
+        observed_at: DateTime<Utc>,
+    ) -> Self {
         Self {
             message_type: "EVENT_REPORT",
-            message_id: Uuid::now_v7(),
+            message_id,
             observed_at,
             event,
         }
