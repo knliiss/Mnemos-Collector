@@ -1,6 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use mnemos_collector::application::CollectorApplication;
 use mnemos_collector::launch::LaunchArguments;
 use mnemos_collector::platform::{Autostart, Installation};
@@ -30,6 +30,15 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    let current_installation = Installation::is_current_installation()
+        .context("failed to verify collector installation location")?;
+
+    if arguments.activation_token.is_some() && !current_installation {
+        bail!(
+            "collector provisioning must run from the stable installation; use --install --activation-token <TOKEN>"
+        );
+    }
+
     if let Some(activation_token) = arguments.activation_token.as_deref() {
         let device_name = arguments.device_name.unwrap_or_else(default_device_name);
 
@@ -42,6 +51,13 @@ async fn main() -> Result<()> {
     let access_key = CredentialStore.load()?.context(
         "collector is not provisioned; run the installer with --install --activation-token <TOKEN>",
     )?;
+
+    if !current_installation {
+        Installation::migrate_existing_and_launch()
+            .context("failed to migrate collector to stable installation")?;
+
+        return Ok(());
+    }
 
     Autostart::ensure_enabled().context("failed to ensure collector autostart")?;
 
