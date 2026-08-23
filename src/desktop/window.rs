@@ -214,9 +214,9 @@ impl DesktopWindow {
             unsafe { CreateFontW(-16, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, mono.as_ptr()) };
         self.edit_brush = unsafe { CreateSolidBrush(COLOR_CARD_ALT) };
 
-        self.token_edit = create_edit(hwnd, instance, false, self.ui_font);
-        self.device_edit = create_edit(hwnd, instance, false, self.ui_font);
-        self.logs_edit = create_edit(hwnd, instance, true, self.mono_font);
+        self.token_edit = unsafe { create_edit(hwnd, instance, false, self.ui_font) };
+        self.device_edit = unsafe { create_edit(hwnd, instance, false, self.ui_font) };
+        self.logs_edit = unsafe { create_edit(hwnd, instance, true, self.mono_font) };
 
         if self.token_edit.is_null() || self.device_edit.is_null() || self.logs_edit.is_null() {
             return Err(io::Error::last_os_error())
@@ -735,13 +735,9 @@ unsafe extern "system" fn window_proc(
                     ShowWindow(hwnd, SW_RESTORE);
                     SetForegroundWindow(hwnd);
                 },
-                WM_RBUTTONUP => {
-                    if !state.is_null() {
-                        unsafe {
-                            (*state).show_tray_menu(hwnd);
-                        }
-                    }
-                }
+                WM_RBUTTONUP if !state.is_null() => unsafe {
+                    (*state).show_tray_menu(hwnd);
+                },
                 _ => {}
             }
             return 0;
