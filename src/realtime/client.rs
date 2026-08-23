@@ -126,7 +126,7 @@ impl RealtimeClient {
         self.set_state(ObservationState::Paused).await
     }
 
-    pub async fn close(mut self) -> Result<()> {
+    pub async fn close(self) -> Result<()> {
         self.alive.store(false, Ordering::Release);
 
         let result = self
