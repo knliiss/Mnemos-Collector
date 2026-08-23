@@ -1,0 +1,20 @@
+[package]
+name = "mnemos-collector"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["clock", "serde"] }
+directories = "6.0"
+regex = "1.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sysinfo = "0.37"
+tokio = { version = "1.47", features = ["fs", "io-util", "macros", "rt-multi-thread", "signal", "time"] }
+uuid = { version = "1.18", features = ["serde", "v7"] }
+
+[dev-dependencies]
+pretty_assertions = "1.4"
