@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use mnemos_collector::application::CollectorApplication;
 use mnemos_collector::launch::LaunchArguments;
-use mnemos_collector::platform::Autostart;
+use mnemos_collector::platform::{Autostart, Installation};
 use mnemos_collector::provisioning::{ProvisioningClient, default_device_name};
 use mnemos_collector::security::CredentialStore;
 use mnemos_collector::update::{
@@ -18,6 +18,18 @@ async fn main() -> Result<()> {
 
     let arguments = LaunchArguments::parse_environment()?;
 
+    if arguments.install {
+        let activation_token = arguments
+            .activation_token
+            .as_deref()
+            .context("collector installation requires an activation token")?;
+
+        Installation::install_and_launch(activation_token, arguments.device_name.as_deref())
+            .context("failed to install Mnemos Collector")?;
+
+        return Ok(());
+    }
+
     if let Some(activation_token) = arguments.activation_token.as_deref() {
         let device_name = arguments.device_name.unwrap_or_else(default_device_name);
 
@@ -27,9 +39,9 @@ async fn main() -> Result<()> {
             .context("failed to provision this collector installation")?;
     }
 
-    let access_key = CredentialStore
-        .load()?
-        .context("collector is not provisioned; launch it once with --activation-token <TOKEN>")?;
+    let access_key = CredentialStore.load()?.context(
+        "collector is not provisioned; run the installer with --install --activation-token <TOKEN>",
+    )?;
 
     Autostart::ensure_enabled().context("failed to ensure collector autostart")?;
 
