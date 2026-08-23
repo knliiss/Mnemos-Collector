@@ -655,6 +655,7 @@ dependencies = [
  "pretty_assertions",
  "regex",
  "reqwest",
+ "ring",
  "same-file",
  "serde",
  "serde_json",
