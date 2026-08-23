@@ -154,21 +154,12 @@ impl ApplyUpdateCommand {
             }
         };
 
-        let healthy = wait_for_health(
-            &mut child,
-            &self.health_file,
-            self.health_token,
-            HEALTH_TIMEOUT,
-        )?;
+        let health_error = self.verify_updated_process(&mut child);
 
-        if healthy {
-            thread::sleep(HEALTH_STABILITY_WINDOW);
-
-            if child.try_wait()?.is_none() {
-                remove_if_exists(&self.health_file)?;
-                remove_if_exists(&self.backup_executable)?;
-                return Ok(());
-            }
+        if health_error.is_none() {
+            let _ = remove_if_exists(&self.health_file);
+            let _ = remove_if_exists(&self.backup_executable);
+            return Ok(());
         }
 
         terminate_child(&mut child)?;
@@ -178,7 +169,32 @@ impl ApplyUpdateCommand {
         launch_collector(&self.current_executable, None, &helper)
             .context("collector rollback was restored but could not be restarted")?;
 
-        bail!("updated collector did not become healthy; rolled back to the previous executable")
+        Err(health_error
+            .expect("unhealthy collector did not produce an update error")
+            .context("updated collector failed health verification; rolled back to the previous executable"))
+    }
+
+    fn verify_updated_process(&self, child: &mut Child) -> Option<anyhow::Error> {
+        match wait_for_health(
+            child,
+            &self.health_file,
+            self.health_token,
+            HEALTH_TIMEOUT,
+        ) {
+            Ok(true) => {}
+            Ok(false) => return Some(anyhow!("updated collector did not acknowledge startup")),
+            Err(error) => return Some(error.context("collector startup health check failed")),
+        }
+
+        thread::sleep(HEALTH_STABILITY_WINDOW);
+
+        match child.try_wait() {
+            Ok(None) => None,
+            Ok(Some(status)) => Some(anyhow!(
+                "updated collector exited during the startup stability window with status {status}"
+            )),
+            Err(error) => Some(error.into()),
+        }
     }
 
     fn validate(&self) -> Result<()> {
