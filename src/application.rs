@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -6,7 +6,9 @@ use chrono::Utc;
 use tokio::signal;
 use tokio::time::{MissedTickBehavior, interval};
 
-use crate::cristalix::{CristalixProcessDetector, LogTailer, discover_latest_log};
+use crate::cristalix::{
+    CristalixProcessDetector, LogTailer, discover_latest_log, scan_existing_log_lines,
+};
 use crate::parser::{EventDeduplicator, GameMode, LogParser};
 use crate::protocol::CollectorEvent;
 use crate::realtime::{RealtimeClient, RealtimeConfig};
@@ -198,6 +200,7 @@ impl CollectorApplication {
 
         match LogTailer::open_from_end(&path).await {
             Ok(tailer) => {
+                self.bootstrap_parser_from_log(&path).await?;
                 self.cached_log_path = Some(path);
                 self.tailer = Some(tailer);
             }
@@ -206,6 +209,23 @@ impl CollectorApplication {
                 return Err(error).context("failed to start latest.log tailing");
             }
         }
+
+        Ok(())
+    }
+
+    async fn bootstrap_parser_from_log(&mut self, path: &Path) -> Result<()> {
+        let mut parser = LogParser::default();
+
+        scan_existing_log_lines(path, |line| parser.consume_context_line(line))
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to recover current Cristalix mode from {}",
+                    path.display()
+                )
+            })?;
+
+        self.parser = parser;
 
         Ok(())
     }
@@ -235,7 +255,14 @@ impl CollectorApplication {
         };
 
         if source_reset {
+            let path = self.tailer.as_ref().map(|tailer| tailer.path().to_path_buf());
+
             self.parser = LogParser::default();
+
+            if let Some(path) = path {
+                self.bootstrap_parser_from_log(&path).await?;
+            }
+
             self.pause_connection().await;
             return Ok(());
         }
