@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use reqwest::Client;
+use reqwest::{Client, Response};
 use ring::signature::{ED25519, UnparsedPublicKey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -108,15 +108,7 @@ impl ReleaseClient {
             .context("failed to fetch collector update manifest")?
             .error_for_status()
             .context("collector update manifest endpoint returned an error")?;
-        let bytes = response
-            .bytes()
-            .await
-            .context("failed to read collector update manifest")?;
-
-        if bytes.len() > MAX_MANIFEST_BYTES {
-            bail!("collector update manifest exceeds the maximum allowed size");
-        }
-
+        let bytes = read_limited_response(response, MAX_MANIFEST_BYTES, "manifest").await?;
         let manifest: UpdateManifest =
             serde_json::from_slice(&bytes).context("collector update manifest is invalid")?;
 
@@ -137,23 +129,12 @@ impl ReleaseClient {
             .context("failed to download collector update artifact")?
             .error_for_status()
             .context("collector update artifact endpoint returned an error")?;
-
-        if response
-            .content_length()
-            .is_some_and(|length| length > self.config.max_artifact_bytes as u64)
-        {
-            bail!("collector update artifact exceeds the maximum allowed size");
-        }
-
-        let bytes = response
-            .bytes()
-            .await
-            .context("failed to read collector update artifact")?;
-
-        if bytes.len() > self.config.max_artifact_bytes {
-            bail!("collector update artifact exceeds the maximum allowed size");
-        }
-
+        let bytes = read_limited_response(
+            response,
+            self.config.max_artifact_bytes,
+            "artifact",
+        )
+        .await?;
         let actual_hash = sha256_hex(&bytes);
 
         if actual_hash != candidate.artifact.sha256 {
@@ -195,6 +176,40 @@ impl ReleaseClient {
     pub fn rollout_delay(&self, collector_id: Uuid, version: CollectorVersion) -> Duration {
         deterministic_rollout_delay(collector_id, version, self.config.rollout_window)
     }
+}
+
+async fn read_limited_response(
+    mut response: Response,
+    limit: usize,
+    resource_name: &str,
+) -> Result<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        bail!("collector update {resource_name} exceeds the maximum allowed size");
+    }
+
+    let mut bytes = Vec::with_capacity(
+        response
+            .content_length()
+            .map(|length| length.min(limit as u64) as usize)
+            .unwrap_or_default(),
+    );
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .with_context(|| format!("failed to read collector update {resource_name}"))?
+    {
+        if chunk.len() > limit.saturating_sub(bytes.len()) {
+            bail!("collector update {resource_name} exceeds the maximum allowed size");
+        }
+
+        bytes.extend_from_slice(&chunk);
+    }
+
+    Ok(bytes)
 }
 
 fn select_candidate(
