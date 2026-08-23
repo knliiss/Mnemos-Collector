@@ -8,8 +8,11 @@ use crate::update::process::{
     CLEANUP_HELPER_ARGUMENT, HEALTH_FILE_ARGUMENT, HEALTH_TOKEN_ARGUMENT,
 };
 
+const INSTALL_ARGUMENT: &str = "--install";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchArguments {
+    pub install: bool,
     pub activation_token: Option<String>,
     pub device_name: Option<String>,
     pub update_health_file: Option<PathBuf>,
@@ -23,6 +26,7 @@ impl LaunchArguments {
     }
 
     pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Self> {
+        let mut install = false;
         let mut activation_token = None;
         let mut device_name = None;
         let mut update_health_file = None;
@@ -32,6 +36,13 @@ impl LaunchArguments {
 
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
+                INSTALL_ARGUMENT => {
+                    if install {
+                        bail!("{INSTALL_ARGUMENT} may only be specified once");
+                    }
+
+                    install = true;
+                }
                 "--activation-token" => {
                     let token = next_value(&mut arguments, "--activation-token")?;
 
@@ -69,11 +80,24 @@ impl LaunchArguments {
             bail!("--device-name requires --activation-token");
         }
 
+        if install && activation_token.is_none() {
+            bail!("{INSTALL_ARGUMENT} requires --activation-token");
+        }
+
         if update_health_file.is_some() != update_health_token.is_some() {
             bail!("collector update health file and token must be supplied together");
         }
 
+        if install
+            && (update_health_file.is_some()
+                || update_health_token.is_some()
+                || cleanup_helper.is_some())
+        {
+            bail!("{INSTALL_ARGUMENT} cannot be combined with internal update arguments");
+        }
+
         Ok(Self {
+            install,
             activation_token,
             device_name,
             update_health_file,
@@ -120,11 +144,28 @@ mod tests {
         ])
         .unwrap();
 
+        assert!(!arguments.install);
         assert_eq!(
             arguments.activation_token.as_deref(),
             Some("activation-token")
         );
         assert_eq!(arguments.device_name.as_deref(), Some("Home PC"));
+    }
+
+    #[test]
+    fn parses_installer_launch() {
+        let arguments = LaunchArguments::parse([
+            INSTALL_ARGUMENT.to_owned(),
+            "--activation-token".to_owned(),
+            "activation-token".to_owned(),
+        ])
+        .unwrap();
+
+        assert!(arguments.install);
+        assert_eq!(
+            arguments.activation_token.as_deref(),
+            Some("activation-token")
+        );
     }
 
     #[test]
@@ -134,6 +175,7 @@ mod tests {
         assert_eq!(
             arguments,
             LaunchArguments {
+                install: false,
                 activation_token: None,
                 device_name: None,
                 update_health_file: None,
@@ -158,6 +200,7 @@ mod tests {
         ])
         .unwrap();
 
+        assert!(!arguments.install);
         assert_eq!(
             arguments.update_health_file.as_deref(),
             Some(health_file.as_path())
@@ -169,6 +212,13 @@ mod tests {
     #[test]
     fn rejects_device_name_without_activation_token() {
         let result = LaunchArguments::parse(["--device-name".to_owned(), "Home PC".to_owned()]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_install_without_activation_token() {
+        let result = LaunchArguments::parse([INSTALL_ARGUMENT.to_owned()]);
 
         assert!(result.is_err());
     }
@@ -191,6 +241,18 @@ mod tests {
             "first".to_owned(),
             "--activation-token".to_owned(),
             "second".to_owned(),
+        ]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_install_argument() {
+        let result = LaunchArguments::parse([
+            INSTALL_ARGUMENT.to_owned(),
+            INSTALL_ARGUMENT.to_owned(),
+            "--activation-token".to_owned(),
+            "activation-token".to_owned(),
         ]);
 
         assert!(result.is_err());
