@@ -8,3 +8,4 @@ pub mod provisioning;
 pub mod realtime;
 pub mod security;
 pub mod spool;
+pub mod update;
