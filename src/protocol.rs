@@ -124,3 +124,19 @@ impl CollectorStateMessage {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CollectorUpdateReadyMessage {
+    #[serde(rename = "type")]
+    pub message_type: &'static str,
+    pub version: String,
+}
+
+impl CollectorUpdateReadyMessage {
+    pub fn new(version: &str) -> Self {
+        Self {
+            message_type: "COLLECTOR_UPDATE_READY",
+            version: version.to_owned(),
+        }
+    }
+}

@@ -31,6 +31,12 @@ pub enum ServerMessage {
         #[serde(rename = "updatedAt")]
         updated_at: DateTime<Utc>,
     },
+    #[serde(rename = "COLLECTOR_UPDATE_SLOT")]
+    CollectorUpdateSlot {
+        granted: bool,
+        #[serde(rename = "retryAfterSeconds")]
+        retry_after_seconds: Option<u64>,
+    },
     #[serde(rename = "ERROR")]
     Error {
         code: TransportErrorCode,

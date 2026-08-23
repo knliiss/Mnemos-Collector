@@ -15,7 +15,9 @@ use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderName, He
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
-use crate::protocol::{CollectorStateMessage, EventReport, ObservationState};
+use crate::protocol::{
+    CollectorStateMessage, CollectorUpdateReadyMessage, EventReport, ObservationState,
+};
 use crate::realtime::response::ServerMessage;
 
 pub const COLLECTOR_PROTOCOL_VERSION: u16 = 1;
@@ -42,6 +44,12 @@ impl Default for RealtimeConfig {
             response_timeout: Duration::from_secs(5),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateSlotDecision {
+    pub granted: bool,
+    pub retry_after: Option<Duration>,
 }
 
 #[derive(Debug)]
@@ -116,6 +124,37 @@ impl RealtimeClient {
         self.set_state(ObservationState::Observing).await?;
         self.send_json(report).await?;
         self.wait_for_report_queued(report.message_id).await
+    }
+
+    pub async fn request_update_slot(&mut self, version: &str) -> Result<UpdateSlotDecision> {
+        if version.is_empty() {
+            bail!("collector update version cannot be empty");
+        }
+
+        self.send_json(&CollectorUpdateReadyMessage::new(version))
+            .await?;
+
+        timeout(self.response_timeout, async {
+            loop {
+                match self.next_server_message().await? {
+                    ServerMessage::CollectorUpdateSlot {
+                        granted,
+                        retry_after_seconds,
+                    } => {
+                        return Ok(UpdateSlotDecision {
+                            granted,
+                            retry_after: retry_after_seconds.map(Duration::from_secs),
+                        });
+                    }
+                    ServerMessage::Error { code, message } => {
+                        bail!("realtime-service rejected collector update: {code:?}: {message}");
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .map_err(|_| anyhow!("timed out waiting for collector update slot"))?
     }
 
     pub async fn pause(&mut self) -> Result<()> {
