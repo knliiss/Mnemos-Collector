@@ -23,9 +23,8 @@ static BOOSTER_LINE: LazyLock<Regex> = LazyLock::new(|| {
     )
     .expect("valid regex")
 });
-static RAID_LOCATION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\(локация\s+#(?P<location>\d+)\)").expect("valid regex")
-});
+static RAID_LOCATION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(локация\s+#(?P<location>\d+)\)").expect("valid regex"));
 static NICKNAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[\p{L}0-9_]{4,20}$").expect("valid regex"));
 
@@ -260,7 +259,9 @@ fn parse_item_type(raw: &str) -> Option<ItemType> {
 
 fn extract_nickname(player_prefix: &str) -> Option<String> {
     let candidate = if let Some((_, suffix)) = player_prefix.rsplit_once('┃') {
-        suffix.split_whitespace().find(|token| NICKNAME.is_match(token))
+        suffix
+            .split_whitespace()
+            .find(|token| NICKNAME.is_match(token))
     } else {
         player_prefix
             .split_whitespace()
