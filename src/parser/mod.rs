@@ -28,8 +28,9 @@ static RAID_LOCATION: LazyLock<Regex> =
 static NICKNAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[\p{L}0-9_]{4,20}$").expect("valid regex"));
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum GameMode {
+    #[default]
     Unknown,
     MasterSwordLobby,
     MasterSword,
@@ -39,12 +40,6 @@ pub enum GameMode {
 impl GameMode {
     fn accepts_events(self) -> bool {
         matches!(self, Self::Unknown | Self::MasterSword)
-    }
-}
-
-impl Default for GameMode {
-    fn default() -> Self {
-        Self::Unknown
     }
 }
 
@@ -154,11 +149,7 @@ fn extract_chat_payload(line: &str) -> Option<&str> {
     let marker_index = line.find(marker)?;
     let payload = &line[marker_index + marker.len()..];
 
-    Some(
-        payload
-            .trim_start_matches(|character| character == ':' || character == ' ')
-            .trim(),
-    )
+    Some(payload.trim_start_matches([':', ' ']).trim())
 }
 
 fn parse_drop(payload: &str) -> Option<CollectorEvent> {
