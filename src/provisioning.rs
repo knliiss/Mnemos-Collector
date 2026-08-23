@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use reqwest::Client;
@@ -105,10 +105,10 @@ impl ProvisioningClient {
     }
 
     fn load_or_create_secret(&self, activation_hash: &str) -> Result<Zeroizing<String>> {
-        if let Some(pending) = self.pending_store.load()? {
-            if pending.activation_hash == activation_hash {
-                return Ok(Zeroizing::new(pending.secret));
-            }
+        if let Some(pending) = self.pending_store.load()?
+            && pending.activation_hash == activation_hash
+        {
+            return Ok(Zeroizing::new(pending.secret));
         }
 
         let secret = generate_secret()?;
