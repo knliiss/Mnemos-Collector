@@ -76,25 +76,29 @@ jobs:
             target: x86_64-unknown-linux-gnu
             platform: linux-x86_64
             asset: mnemos-collector-linux-x86_64
-            installer_asset: mnemos-collector-installer-linux-x86_64
+            installer_asset: mnemos-collector-installer-linux-x86_64.tar.gz
+            installer_package: tar
             binary: mnemos-collector
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             platform: windows-x86_64
             asset: mnemos-collector-windows-x86_64.exe
             installer_asset: mnemos-collector-installer-windows-x86_64.exe
+            installer_package: exe
             binary: mnemos-collector.exe
           - os: macos-latest
             target: x86_64-apple-darwin
             platform: macos-x86_64
             asset: mnemos-collector-macos-x86_64
-            installer_asset: mnemos-collector-installer-macos-x86_64
+            installer_asset: mnemos-collector-installer-macos-x86_64.tar.gz
+            installer_package: tar
             binary: mnemos-collector
           - os: macos-latest
             target: aarch64-apple-darwin
             platform: macos-aarch64
             asset: mnemos-collector-macos-aarch64
-            installer_asset: mnemos-collector-installer-macos-aarch64
+            installer_asset: mnemos-collector-installer-macos-aarch64.tar.gz
+            installer_package: tar
             binary: mnemos-collector
 
     runs-on: ${{ matrix.os }}
@@ -131,9 +135,22 @@ jobs:
           cp \
             "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
             "dist/${{ matrix.asset }}"
-          cp \
-            "dist/${{ matrix.asset }}" \
-            "dist/${{ matrix.installer_asset }}"
+
+          if [ "${{ matrix.installer_package }}" = "exe" ]; then
+            cp \
+              "dist/${{ matrix.asset }}" \
+              "dist/${{ matrix.installer_asset }}"
+          else
+            installer_binary="dist/mnemos-collector-installer"
+
+            cp "dist/${{ matrix.asset }}" "$installer_binary"
+            chmod 755 "$installer_binary"
+            tar \
+              -C dist \
+              -czf "dist/${{ matrix.installer_asset }}" \
+              mnemos-collector-installer
+            rm "$installer_binary"
+          fi
 
       - name: Upload collector artifacts
         uses: actions/upload-artifact@v7
@@ -263,13 +280,13 @@ jobs:
 
           assets=(
             dist/mnemos-collector-linux-x86_64
-            dist/mnemos-collector-installer-linux-x86_64
+            dist/mnemos-collector-installer-linux-x86_64.tar.gz
             dist/mnemos-collector-windows-x86_64.exe
             dist/mnemos-collector-installer-windows-x86_64.exe
             dist/mnemos-collector-macos-x86_64
-            dist/mnemos-collector-installer-macos-x86_64
+            dist/mnemos-collector-installer-macos-x86_64.tar.gz
             dist/mnemos-collector-macos-aarch64
-            dist/mnemos-collector-installer-macos-aarch64
+            dist/mnemos-collector-installer-macos-aarch64.tar.gz
             dist/manifest.json
           )
 
