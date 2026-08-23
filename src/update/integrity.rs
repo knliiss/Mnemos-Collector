@@ -14,9 +14,9 @@ pub fn sha256_file(path: &Path) -> Result<String> {
     let mut buffer = [0_u8; HASH_BUFFER_SIZE];
 
     loop {
-        let read = file
-            .read(&mut buffer)
-            .with_context(|| format!("failed to read {} for SHA-256 verification", path.display()))?;
+        let read = file.read(&mut buffer).with_context(|| {
+            format!("failed to read {} for SHA-256 verification", path.display())
+        })?;
 
         if read == 0 {
             break;
@@ -64,10 +64,8 @@ mod tests {
     fn rejects_noncanonical_sha256() {
         assert!(validate_sha256("short").is_err());
         assert!(
-            validate_sha256(
-                "B2E64F429B4EDE4F8873AE95CC9E31FCC21905DA23ACD0D42BB47C48DB1E0ACB"
-            )
-            .is_err()
+            validate_sha256("B2E64F429B4EDE4F8873AE95CC9E31FCC21905DA23ACD0D42BB47C48DB1E0ACB")
+                .is_err()
         );
     }
 }
