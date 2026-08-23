@@ -373,15 +373,18 @@ impl CollectorApplication {
             }
         };
 
-        if UpdateHandoff::start(request.staged_executable()).is_err() {
+        let handoff_result = UpdateHandoff::start(
+            request.staged_executable(),
+            request.expected_sha256(),
+        );
+
+        if handoff_result.is_err() {
             coordinator.restore_handoff(request);
             self.update_coordinator = Some(coordinator);
             return false;
         }
 
-        if let Some(client) = self.realtime.take() {
-            let _ = client.close().await;
-        }
+        self.realtime = None;
 
         true
     }
