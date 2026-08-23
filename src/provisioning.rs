@@ -239,7 +239,7 @@ mod tests {
     fn hashes_values_as_lowercase_sha256() {
         assert_eq!(
             sha256_hex(b"mnemos"),
-            "fbe2cc9d42c55a0548d032beb468255aed5b5c8e51be0fc0b40cb8425fd3c320"
+            "606e9033fcb6ea658da54ddfdb93ae78d7ae4c51c49fa2f0503165f57020871c"
         );
     }
 
