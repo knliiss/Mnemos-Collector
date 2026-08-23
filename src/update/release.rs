@@ -129,12 +129,8 @@ impl ReleaseClient {
             .context("failed to download collector update artifact")?
             .error_for_status()
             .context("collector update artifact endpoint returned an error")?;
-        let bytes = read_limited_response(
-            response,
-            self.config.max_artifact_bytes,
-            "artifact",
-        )
-        .await?;
+        let bytes =
+            read_limited_response(response, self.config.max_artifact_bytes, "artifact").await?;
         let actual_hash = sha256_hex(&bytes);
 
         if actual_hash != candidate.artifact.sha256 {
