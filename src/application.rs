@@ -255,7 +255,10 @@ impl CollectorApplication {
         };
 
         if source_reset {
-            let path = self.tailer.as_ref().map(|tailer| tailer.path().to_path_buf());
+            let path = self
+                .tailer
+                .as_ref()
+                .map(|tailer| tailer.path().to_path_buf());
 
             self.parser = LogParser::default();
 
