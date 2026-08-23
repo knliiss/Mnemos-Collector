@@ -141,10 +141,7 @@ impl ApplyUpdateCommand {
             health_token: require_argument(health_token, HEALTH_TOKEN_ARGUMENT)?,
             expected_sha256: require_argument(expected_sha256, EXPECTED_SHA256_ARGUMENT)?,
             parent_pid: require_argument(parent_pid, PARENT_PID_ARGUMENT)?,
-            parent_start_time: require_argument(
-                parent_start_time,
-                PARENT_START_TIME_ARGUMENT,
-            )?,
+            parent_start_time: require_argument(parent_start_time, PARENT_START_TIME_ARGUMENT)?,
         };
 
         command.validate()?;
@@ -159,11 +156,7 @@ impl ApplyUpdateCommand {
             std::env::current_exe().context("failed to locate collector updater helper")?;
         require_safe_helper_path(&helper)?;
 
-        wait_for_parent_exit(
-            self.parent_pid,
-            self.parent_start_time,
-            REPLACEMENT_TIMEOUT,
-        )?;
+        wait_for_parent_exit(self.parent_pid, self.parent_start_time, REPLACEMENT_TIMEOUT)?;
         remove_if_exists(&self.health_file)?;
 
         let install_executable = install_path(&self.current_executable, self.health_token)?;
@@ -517,7 +510,8 @@ fn restore_backup(current: &Path, backup: &Path) -> Result<()> {
         bail!("collector rollback executable is unavailable");
     }
 
-    fs::rename(backup, current).context("failed to atomically restore previous collector executable")
+    fs::rename(backup, current)
+        .context("failed to atomically restore previous collector executable")
 }
 
 #[cfg(windows)]
@@ -551,13 +545,12 @@ fn replace_file_windows(current: &Path, replacement: &Path, backup: Option<&Path
             .chain(std::iter::once(0))
             .collect::<Vec<_>>()
     });
-    let backup_pointer = backup
-        .as_ref()
-        .map_or(ptr::null(), |value| value.as_ptr());
+    let backup_pointer = backup.as_ref().map_or(ptr::null(), |value| value.as_ptr());
 
     #[link(name = "kernel32")]
     unsafe extern "system" {
-        fn ReplaceFileW(
+        #[link_name = "ReplaceFileW"]
+        fn replace_file_w(
             replaced_file_name: *const u16,
             replacement_file_name: *const u16,
             backup_file_name: *const u16,
@@ -568,7 +561,7 @@ fn replace_file_windows(current: &Path, replacement: &Path, backup: Option<&Path
     }
 
     let result = unsafe {
-        ReplaceFileW(
+        replace_file_w(
             current.as_ptr(),
             replacement.as_ptr(),
             backup_pointer,
