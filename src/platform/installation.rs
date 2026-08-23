@@ -16,7 +16,34 @@ impl Installation {
         let target = installation_path()?;
 
         ensure_installed(&target)?;
-        launch_installed(&target, activation_token, device_name)
+        launch_installed(&target, Some(activation_token), device_name)
+    }
+
+    pub fn migrate_existing_and_launch() -> Result<()> {
+        let target = installation_path()?;
+
+        ensure_installed(&target)?;
+        launch_installed(&target, None, None)
+    }
+
+    pub fn is_current_installation() -> Result<bool> {
+        let target = installation_path()?;
+
+        if !target.exists() {
+            return Ok(false);
+        }
+
+        validate_existing_installation(&target)?;
+
+        let current = std::env::current_exe()
+            .context("failed to locate running collector executable")?
+            .canonicalize()
+            .context("failed to resolve running collector executable")?;
+        let installed = target
+            .canonicalize()
+            .context("failed to resolve collector installation")?;
+
+        Ok(current == installed)
     }
 }
 
@@ -43,15 +70,6 @@ fn ensure_installed(target: &Path) -> Result<()> {
 
     if target.exists() {
         validate_existing_installation(target)?;
-
-        let installed = target
-            .canonicalize()
-            .context("failed to resolve existing collector installation")?;
-
-        if installed == current {
-            return Ok(());
-        }
-
         return Ok(());
     }
 
@@ -110,12 +128,16 @@ fn temporary_installation_path(target: &Path) -> Result<PathBuf> {
 
 fn launch_installed(
     target: &Path,
-    activation_token: &str,
+    activation_token: Option<&str>,
     device_name: Option<&str>,
 ) -> Result<()> {
     let mut command = Command::new(target);
 
-    command.arg("--activation-token").arg(activation_token);
+    if let Some(activation_token) = activation_token {
+        command
+            .arg("--activation-token")
+            .arg(activation_token);
+    }
 
     if let Some(device_name) = device_name {
         command.arg("--device-name").arg(device_name);
