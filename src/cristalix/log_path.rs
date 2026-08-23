@@ -74,7 +74,10 @@ mod tests {
         fs::create_dir_all(&directory).unwrap();
         fs::write(&cached, b"").unwrap();
 
-        assert_eq!(discover_latest_log(Some(&cached), &[]), Some(cached.clone()));
+        assert_eq!(
+            discover_latest_log(Some(&cached), &[]),
+            Some(cached.clone())
+        );
 
         let _ = fs::remove_dir_all(directory);
     }
