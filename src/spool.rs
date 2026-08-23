@@ -32,11 +32,7 @@ impl PendingReport {
     }
 
     pub fn to_event_report(&self) -> EventReport {
-        EventReport::with_message_id(
-            self.message_id,
-            self.event.clone(),
-            self.observed_at,
-        )
+        EventReport::with_message_id(self.message_id, self.event.clone(), self.observed_at)
     }
 }
 
@@ -204,7 +200,8 @@ async fn load_snapshot(path: &Path) -> Result<VecDeque<PendingReport>> {
         return Ok(VecDeque::new());
     }
 
-    let (candidate, error) = last_error.context("report spool snapshot was present but unreadable")?;
+    let (candidate, error) =
+        last_error.context("report spool snapshot was present but unreadable")?;
 
     Err(anyhow!(error)).with_context(|| {
         format!(
