@@ -21,6 +21,7 @@ const STAGED_EXECUTABLE_ARGUMENT: &str = "--staged-executable";
 const BACKUP_EXECUTABLE_ARGUMENT: &str = "--backup-executable";
 const EXPECTED_SHA256_ARGUMENT: &str = "--expected-sha256";
 const PARENT_PID_ARGUMENT: &str = "--parent-pid";
+const PARENT_START_TIME_ARGUMENT: &str = "--parent-start-time";
 pub(crate) const HEALTH_FILE_ARGUMENT: &str = "--health-file";
 pub(crate) const HEALTH_TOKEN_ARGUMENT: &str = "--health-token";
 pub(crate) const CLEANUP_HELPER_ARGUMENT: &str = "--cleanup-helper";
@@ -29,7 +30,7 @@ const REPLACEMENT_TIMEOUT: Duration = Duration::from_secs(15);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
 const HEALTH_STABILITY_WINDOW: Duration = Duration::from_secs(2);
 const RETRY_INTERVAL: Duration = Duration::from_millis(100);
-const HELPER_CLEANUP_ATTEMPTS: usize = 40;
+const HELPER_CLEANUP_ATTEMPTS: usize = 120;
 const HELPER_CLEANUP_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +42,7 @@ pub struct ApplyUpdateCommand {
     health_token: Uuid,
     expected_sha256: String,
     parent_pid: u32,
+    parent_start_time: u64,
 }
 
 impl ApplyUpdateCommand {
@@ -62,6 +64,7 @@ impl ApplyUpdateCommand {
         let mut health_token = None;
         let mut expected_sha256 = None;
         let mut parent_pid = None;
+        let mut parent_start_time = None;
         let mut index = 1;
 
         while index < arguments.len() {
@@ -113,6 +116,17 @@ impl ApplyUpdateCommand {
 
                     set_once(&mut parent_pid, pid, PARENT_PID_ARGUMENT)?;
                 }
+                PARENT_START_TIME_ARGUMENT => {
+                    let start_time = value
+                        .parse::<u64>()
+                        .context("collector update parent start time is invalid")?;
+
+                    set_once(
+                        &mut parent_start_time,
+                        start_time,
+                        PARENT_START_TIME_ARGUMENT,
+                    )?;
+                }
                 _ => bail!("unsupported collector updater argument: {argument_name}"),
             }
 
@@ -127,6 +141,10 @@ impl ApplyUpdateCommand {
             health_token: require_argument(health_token, HEALTH_TOKEN_ARGUMENT)?,
             expected_sha256: require_argument(expected_sha256, EXPECTED_SHA256_ARGUMENT)?,
             parent_pid: require_argument(parent_pid, PARENT_PID_ARGUMENT)?,
+            parent_start_time: require_argument(
+                parent_start_time,
+                PARENT_START_TIME_ARGUMENT,
+            )?,
         };
 
         command.validate()?;
@@ -141,7 +159,11 @@ impl ApplyUpdateCommand {
             std::env::current_exe().context("failed to locate collector updater helper")?;
         require_safe_helper_path(&helper)?;
 
-        wait_for_parent_exit(self.parent_pid, REPLACEMENT_TIMEOUT)?;
+        wait_for_parent_exit(
+            self.parent_pid,
+            self.parent_start_time,
+            REPLACEMENT_TIMEOUT,
+        )?;
         remove_if_exists(&self.health_file)?;
 
         let install_executable = install_path(&self.current_executable, self.health_token)?;
@@ -152,30 +174,14 @@ impl ApplyUpdateCommand {
                 .context("failed to prepare collector update beside the installed binary");
         }
 
-        if let Err(error) = move_current_to_backup(
+        if let Err(error) = replace_current_executable(
             &self.current_executable,
+            &install_executable,
             &self.backup_executable,
-            REPLACEMENT_TIMEOUT,
         ) {
             let _ = remove_if_exists(&install_executable);
             restart_current(&self.current_executable, &helper)?;
-            return Err(error);
-        }
-
-        if let Err(error) = fs::rename(&install_executable, &self.current_executable) {
-            let rollback_result = fs::rename(&self.backup_executable, &self.current_executable);
-
-            match rollback_result {
-                Ok(()) => {
-                    restart_current(&self.current_executable, &helper)?;
-                    return Err(error).context("failed to install prepared collector executable");
-                }
-                Err(rollback_error) => {
-                    return Err(anyhow!(
-                        "failed to install prepared collector executable: {error}; rollback also failed: {rollback_error}"
-                    ));
-                }
-            }
+            return Err(error).context("failed to install prepared collector executable");
         }
 
         let _ = remove_if_exists(&self.staged_executable);
@@ -323,6 +329,7 @@ impl UpdateHandoff {
         let helper = helper_path()?;
         let health_file = health_file_path()?;
         let parent_pid = std::process::id();
+        let parent_start_time = current_process_start_time(parent_pid)?;
 
         fs::create_dir_all(update_directory()?)
             .context("failed to create collector update directory")?;
@@ -347,6 +354,8 @@ impl UpdateHandoff {
             .arg(expected_sha256)
             .arg(PARENT_PID_ARGUMENT)
             .arg(parent_pid.to_string())
+            .arg(PARENT_START_TIME_ARGUMENT)
+            .arg(parent_start_time.to_string())
             .spawn();
 
         match spawn_result {
@@ -420,7 +429,19 @@ fn launch_collector(
         .with_context(|| format!("failed to launch {}", executable.display()))
 }
 
-fn wait_for_parent_exit(parent_pid: u32, timeout: Duration) -> Result<()> {
+fn current_process_start_time(parent_pid: u32) -> Result<u64> {
+    let pid = Pid::from_u32(parent_pid);
+    let mut system = System::new();
+
+    system.refresh_processes(ProcessesToUpdate::All, true);
+
+    system
+        .process(pid)
+        .map(|process| process.start_time())
+        .context("failed to identify the running collector process for updater handoff")
+}
+
+fn wait_for_parent_exit(parent_pid: u32, parent_start_time: u64, timeout: Duration) -> Result<()> {
     let deadline = Instant::now() + timeout;
     let pid = Pid::from_u32(parent_pid);
     let mut system = System::new();
@@ -428,11 +449,11 @@ fn wait_for_parent_exit(parent_pid: u32, timeout: Duration) -> Result<()> {
     while Instant::now() < deadline {
         system.refresh_processes(ProcessesToUpdate::All, true);
 
-        if system.process(pid).is_none() {
-            return Ok(());
+        match system.process(pid) {
+            None => return Ok(()),
+            Some(process) if process.start_time() != parent_start_time => return Ok(()),
+            Some(_) => thread::sleep(RETRY_INTERVAL),
         }
-
-        thread::sleep(RETRY_INTERVAL);
     }
 
     bail!("timed out waiting for previous collector process to exit")
@@ -465,32 +486,103 @@ fn wait_for_health(
     Ok(false)
 }
 
-fn move_current_to_backup(current: &Path, backup: &Path, timeout: Duration) -> Result<()> {
-    let deadline = Instant::now() + timeout;
-    let mut last_error = None;
+#[cfg(unix)]
+fn replace_current_executable(current: &Path, replacement: &Path, backup: &Path) -> Result<()> {
+    remove_if_exists(backup)?;
 
-    while Instant::now() < deadline {
-        match fs::rename(current, backup) {
-            Ok(()) => return Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(error)
-                    .context("running collector executable disappeared during update");
-            }
-            Err(error) => {
-                last_error = Some(error);
-                thread::sleep(RETRY_INTERVAL);
-            }
-        }
+    fs::copy(current, backup)
+        .context("failed to create collector rollback executable before replacement")?;
+    preserve_executable_permissions(current, backup)?;
+    sync_file(backup)?;
+
+    if let Err(error) = fs::rename(replacement, current) {
+        let _ = remove_if_exists(backup);
+        return Err(error).context("failed to atomically replace collector executable");
     }
 
-    Err(last_error.unwrap_or_else(|| std::io::Error::other("collector replacement timed out")))
-        .context("timed out waiting to replace the running collector executable")
+    Ok(())
 }
 
-fn restore_backup(current: &Path, backup: &Path) -> Result<()> {
-    remove_if_exists(current)?;
+#[cfg(windows)]
+fn replace_current_executable(current: &Path, replacement: &Path, backup: &Path) -> Result<()> {
+    remove_if_exists(backup)?;
 
-    fs::rename(backup, current).context("failed to restore previous collector executable")
+    replace_file_windows(current, replacement, Some(backup))
+        .context("failed to atomically replace collector executable")
+}
+
+#[cfg(unix)]
+fn restore_backup(current: &Path, backup: &Path) -> Result<()> {
+    if !backup.is_file() {
+        bail!("collector rollback executable is unavailable");
+    }
+
+    fs::rename(backup, current).context("failed to atomically restore previous collector executable")
+}
+
+#[cfg(windows)]
+fn restore_backup(current: &Path, backup: &Path) -> Result<()> {
+    if !backup.is_file() {
+        bail!("collector rollback executable is unavailable");
+    }
+
+    replace_file_windows(current, backup, None)
+        .context("failed to atomically restore previous collector executable")
+}
+
+#[cfg(windows)]
+fn replace_file_windows(current: &Path, replacement: &Path, backup: Option<&Path>) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+
+    let current = current
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let replacement = replacement
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let backup = backup.map(|path| {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>()
+    });
+    let backup_pointer = backup
+        .as_ref()
+        .map_or(ptr::null(), |value| value.as_ptr());
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn ReplaceFileW(
+            replaced_file_name: *const u16,
+            replacement_file_name: *const u16,
+            backup_file_name: *const u16,
+            replace_flags: u32,
+            exclude: *mut core::ffi::c_void,
+            reserved: *mut core::ffi::c_void,
+        ) -> i32;
+    }
+
+    let result = unsafe {
+        ReplaceFileW(
+            current.as_ptr(),
+            replacement.as_ptr(),
+            backup_pointer,
+            0,
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    };
+
+    if result == 0 {
+        return Err(std::io::Error::last_os_error()).context("Windows ReplaceFileW failed");
+    }
+
+    Ok(())
 }
 
 fn terminate_child(child: &mut Child) -> Result<()> {
