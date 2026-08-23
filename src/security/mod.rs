@@ -62,7 +62,10 @@ impl PendingProvisioningStore {
         validate_secret(&pending.secret)?;
 
         if pending.activation_hash.len() != 64
-            || !pending.activation_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || !pending
+                .activation_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
         {
             bail!("pending provisioning activation hash has an invalid format");
         }
@@ -73,8 +76,8 @@ impl PendingProvisioningStore {
     pub fn save(self, pending: &PendingProvisioningSecret) -> Result<()> {
         validate_secret(&pending.secret)?;
 
-        let encoded =
-            serde_json::to_string(pending).context("failed to encode pending provisioning secret")?;
+        let encoded = serde_json::to_string(pending)
+            .context("failed to encode pending provisioning secret")?;
 
         Entry::new(KEYRING_SERVICE, PENDING_PROVISIONING_ACCOUNT)
             .context("failed to open the operating-system credential store")?
