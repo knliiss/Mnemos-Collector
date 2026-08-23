@@ -6,7 +6,8 @@ pub struct Autostart;
 
 impl Autostart {
     pub fn ensure_enabled() -> Result<()> {
-        let executable = env::current_exe().context("failed to resolve collector executable path")?;
+        let executable =
+            env::current_exe().context("failed to resolve collector executable path")?;
 
         platform::enable(&executable)
     }
