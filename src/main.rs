@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use anyhow::{Context, Result, bail};
+#[cfg(not(target_os = "windows"))]
 use mnemos_collector::application::CollectorApplication;
 #[cfg(target_os = "windows")]
 use mnemos_collector::desktop::{self, DesktopLaunchContext};
@@ -101,13 +102,13 @@ async fn run() -> Result<()> {
             prepare_provisioned_startup(&arguments)?;
         }
 
-        return desktop::run(
+        desktop::run(
             DesktopLaunchContext {
                 current_installation,
                 access_key,
             },
             tokio::runtime::Handle::current(),
-        );
+        )
     }
 
     #[cfg(not(target_os = "windows"))]
