@@ -175,12 +175,7 @@ impl ApplyUpdateCommand {
     }
 
     fn verify_updated_process(&self, child: &mut Child) -> Option<anyhow::Error> {
-        match wait_for_health(
-            child,
-            &self.health_file,
-            self.health_token,
-            HEALTH_TIMEOUT,
-        ) {
+        match wait_for_health(child, &self.health_file, self.health_token, HEALTH_TIMEOUT) {
             Ok(true) => {}
             Ok(false) => return Some(anyhow!("updated collector did not acknowledge startup")),
             Err(error) => return Some(error.context("collector startup health check failed")),
