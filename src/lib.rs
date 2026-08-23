@@ -1,5 +1,6 @@
 pub mod application;
 pub mod cristalix;
+pub mod launch;
 pub mod parser;
 pub mod platform;
 pub mod protocol;
