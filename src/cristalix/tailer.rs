@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use same_file::Handle;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 
 #[derive(Debug)]
 pub struct LogTailer {
@@ -132,6 +132,42 @@ impl LogTailer {
     }
 }
 
+pub async fn scan_existing_log_lines<F>(path: impl AsRef<Path>, mut consume: F) -> Result<()>
+where
+    F: FnMut(&str),
+{
+    let path = path.as_ref();
+    let file = File::open(path)
+        .await
+        .with_context(|| format!("failed to open existing log context {}", path.display()))?;
+    let mut reader = BufReader::new(file);
+    let mut buffer = Vec::new();
+
+    loop {
+        buffer.clear();
+
+        let read = reader
+            .read_until(b'\n', &mut buffer)
+            .await
+            .with_context(|| format!("failed to scan existing log context {}", path.display()))?;
+
+        if read == 0 {
+            return Ok(());
+        }
+
+        if buffer.last() == Some(&b'\n') {
+            buffer.pop();
+        }
+
+        if buffer.last() == Some(&b'\r') {
+            buffer.pop();
+        }
+
+        let line = String::from_utf8_lossy(&buffer);
+        consume(&line);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +197,35 @@ mod tests {
 
         assert_eq!(tailer.read_new_lines().await.unwrap(), vec!["fresh-two"]);
         assert_eq!(tailer.generation(), 0);
+
+        let _ = fs::remove_dir_all(directory).await;
+    }
+
+    #[tokio::test]
+    async fn scans_existing_context_without_replaying_it_through_tailer() {
+        let directory = std::env::temp_dir().join(format!("mnemos-tail-{}", Uuid::now_v7()));
+        let path = directory.join("latest.log");
+
+        fs::create_dir_all(&directory).await.unwrap();
+        fs::write(&path, b"historical-one\r\nhistorical-two\n")
+            .await
+            .unwrap();
+
+        let mut tailer = LogTailer::open_from_end(&path).await.unwrap();
+        let mut context = Vec::new();
+
+        scan_existing_log_lines(&path, |line| context.push(line.to_owned()))
+            .await
+            .unwrap();
+
+        assert_eq!(context, vec!["historical-one", "historical-two"]);
+        assert!(tailer.read_new_lines().await.unwrap().is_empty());
+
+        let mut writer = OpenOptions::new().append(true).open(&path).await.unwrap();
+        writer.write_all(b"fresh\n").await.unwrap();
+        writer.flush().await.unwrap();
+
+        assert_eq!(tailer.read_new_lines().await.unwrap(), vec!["fresh"]);
 
         let _ = fs::remove_dir_all(directory).await;
     }
