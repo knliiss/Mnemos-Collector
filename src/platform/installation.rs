@@ -59,8 +59,7 @@ fn ensure_installed(target: &Path) -> Result<()> {
         .parent()
         .context("collector installation path has no parent directory")?;
 
-    fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create {}", parent.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
 
     let temporary = temporary_installation_path(target)?;
 
@@ -109,20 +108,25 @@ fn temporary_installation_path(target: &Path) -> Result<PathBuf> {
     Ok(parent.join(format!("{file_name}.install-{}", Uuid::now_v7())))
 }
 
-fn launch_installed(target: &Path, activation_token: &str, device_name: Option<&str>) -> Result<()> {
+fn launch_installed(
+    target: &Path,
+    activation_token: &str,
+    device_name: Option<&str>,
+) -> Result<()> {
     let mut command = Command::new(target);
 
-    command
-        .arg("--activation-token")
-        .arg(activation_token);
+    command.arg("--activation-token").arg(activation_token);
 
     if let Some(device_name) = device_name {
         command.arg("--device-name").arg(device_name);
     }
 
-    command
-        .spawn()
-        .with_context(|| format!("failed to launch installed collector at {}", target.display()))?;
+    command.spawn().with_context(|| {
+        format!(
+            "failed to launch installed collector at {}",
+            target.display()
+        )
+    })?;
 
     Ok(())
 }
