@@ -15,8 +15,7 @@ impl Default for CristalixProcessDetector {
 
 impl CristalixProcessDetector {
     pub fn is_running(&mut self) -> bool {
-        self.system
-            .refresh_processes(ProcessesToUpdate::All, true);
+        self.system.refresh_processes(ProcessesToUpdate::All, true);
 
         self.system.processes().values().any(is_cristalix_process)
     }
