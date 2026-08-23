@@ -12,7 +12,7 @@ chrono = { version = "0.4", features = ["clock", "serde"] }
 directories = "6.0"
 futures-util = "0.3"
 getrandom = "0.3"
-keyring = "3.6"
+keyring = { version = "3.6", features = ["windows-native"] }
 regex = "1.11"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 ring = "0.17"
