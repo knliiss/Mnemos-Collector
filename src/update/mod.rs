@@ -1,4 +1,5 @@
 mod coordinator;
+pub(crate) mod integrity;
 pub(crate) mod paths;
 pub(crate) mod process;
 mod release;

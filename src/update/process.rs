@@ -6,17 +6,21 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
+use sysinfo::{Pid, ProcessesToUpdate, System};
 use uuid::Uuid;
 
+use crate::update::integrity::{sha256_file, validate_sha256};
 use crate::update::paths::{
-    backup_path, health_file_path, helper_path, require_safe_health_path, require_safe_helper_path,
-    require_safe_update_path, update_directory,
+    backup_path, health_file_path, helper_path, install_path, require_safe_health_path,
+    require_safe_helper_path, require_safe_update_path, update_directory,
 };
 
 const APPLY_UPDATE_FLAG: &str = "--apply-update";
 const CURRENT_EXECUTABLE_ARGUMENT: &str = "--current-executable";
 const STAGED_EXECUTABLE_ARGUMENT: &str = "--staged-executable";
 const BACKUP_EXECUTABLE_ARGUMENT: &str = "--backup-executable";
+const EXPECTED_SHA256_ARGUMENT: &str = "--expected-sha256";
+const PARENT_PID_ARGUMENT: &str = "--parent-pid";
 pub(crate) const HEALTH_FILE_ARGUMENT: &str = "--health-file";
 pub(crate) const HEALTH_TOKEN_ARGUMENT: &str = "--health-token";
 pub(crate) const CLEANUP_HELPER_ARGUMENT: &str = "--cleanup-helper";
@@ -35,6 +39,8 @@ pub struct ApplyUpdateCommand {
     backup_executable: PathBuf,
     health_file: PathBuf,
     health_token: Uuid,
+    expected_sha256: String,
+    parent_pid: u32,
 }
 
 impl ApplyUpdateCommand {
@@ -54,6 +60,8 @@ impl ApplyUpdateCommand {
         let mut backup_executable = None;
         let mut health_file = None;
         let mut health_token = None;
+        let mut expected_sha256 = None;
+        let mut parent_pid = None;
         let mut index = 1;
 
         while index < arguments.len() {
@@ -94,6 +102,17 @@ impl ApplyUpdateCommand {
 
                     set_once(&mut health_token, token, HEALTH_TOKEN_ARGUMENT)?;
                 }
+                EXPECTED_SHA256_ARGUMENT => {
+                    validate_sha256(&value)?;
+                    set_once(&mut expected_sha256, value, EXPECTED_SHA256_ARGUMENT)?;
+                }
+                PARENT_PID_ARGUMENT => {
+                    let pid = value
+                        .parse::<u32>()
+                        .context("collector update parent PID is invalid")?;
+
+                    set_once(&mut parent_pid, pid, PARENT_PID_ARGUMENT)?;
+                }
                 _ => bail!("unsupported collector updater argument: {argument_name}"),
             }
 
@@ -106,6 +125,8 @@ impl ApplyUpdateCommand {
             backup_executable: require_argument(backup_executable, BACKUP_EXECUTABLE_ARGUMENT)?,
             health_file: require_argument(health_file, HEALTH_FILE_ARGUMENT)?,
             health_token: require_argument(health_token, HEALTH_TOKEN_ARGUMENT)?,
+            expected_sha256: require_argument(expected_sha256, EXPECTED_SHA256_ARGUMENT)?,
+            parent_pid: require_argument(parent_pid, PARENT_PID_ARGUMENT)?,
         };
 
         command.validate()?;
@@ -120,24 +141,43 @@ impl ApplyUpdateCommand {
             std::env::current_exe().context("failed to locate collector updater helper")?;
         require_safe_helper_path(&helper)?;
 
+        wait_for_parent_exit(self.parent_pid, REPLACEMENT_TIMEOUT)?;
         remove_if_exists(&self.health_file)?;
 
-        move_current_to_backup(
+        let install_executable = install_path(&self.current_executable, self.health_token)?;
+
+        if let Err(error) = self.prepare_install_executable(&install_executable) {
+            restart_current(&self.current_executable, &helper)?;
+            return Err(error).context("failed to prepare collector update beside the installed binary");
+        }
+
+        if let Err(error) = move_current_to_backup(
             &self.current_executable,
             &self.backup_executable,
             REPLACEMENT_TIMEOUT,
-        )?;
+        ) {
+            let _ = remove_if_exists(&install_executable);
+            restart_current(&self.current_executable, &helper)?;
+            return Err(error);
+        }
 
-        if let Err(error) = fs::rename(&self.staged_executable, &self.current_executable) {
+        if let Err(error) = fs::rename(&install_executable, &self.current_executable) {
             let rollback_result = fs::rename(&self.backup_executable, &self.current_executable);
 
-            return match rollback_result {
-                Ok(()) => Err(error).context("failed to install staged collector executable"),
-                Err(rollback_error) => Err(anyhow!(
-                    "failed to install staged collector executable: {error}; rollback also failed: {rollback_error}"
-                )),
-            };
+            match rollback_result {
+                Ok(()) => {
+                    restart_current(&self.current_executable, &helper)?;
+                    return Err(error).context("failed to install prepared collector executable");
+                }
+                Err(rollback_error) => {
+                    return Err(anyhow!(
+                        "failed to install prepared collector executable: {error}; rollback also failed: {rollback_error}"
+                    ));
+                }
+            }
         }
+
+        let _ = remove_if_exists(&self.staged_executable);
 
         let mut child = match launch_collector(
             &self.current_executable,
@@ -147,8 +187,7 @@ impl ApplyUpdateCommand {
             Ok(child) => child,
             Err(error) => {
                 restore_backup(&self.current_executable, &self.backup_executable)?;
-                launch_collector(&self.current_executable, None, &helper)
-                    .context("collector rollback was restored but could not be restarted")?;
+                restart_current(&self.current_executable, &helper)?;
 
                 return Err(error).context("updated collector could not be started");
             }
@@ -165,13 +204,38 @@ impl ApplyUpdateCommand {
         terminate_child(&mut child)?;
         remove_if_exists(&self.health_file)?;
         restore_backup(&self.current_executable, &self.backup_executable)?;
-
-        launch_collector(&self.current_executable, None, &helper)
-            .context("collector rollback was restored but could not be restarted")?;
+        restart_current(&self.current_executable, &helper)?;
 
         Err(health_error
             .expect("unhealthy collector did not produce an update error")
             .context("updated collector failed health verification; rolled back to the previous executable"))
+    }
+
+    fn prepare_install_executable(&self, install_executable: &Path) -> Result<()> {
+        let staged_hash = sha256_file(&self.staged_executable)?;
+
+        if staged_hash != self.expected_sha256 {
+            bail!("staged collector update SHA-256 changed after download verification");
+        }
+
+        remove_if_exists(install_executable)?;
+
+        if let Err(error) = fs::copy(&self.staged_executable, install_executable) {
+            let _ = remove_if_exists(install_executable);
+            return Err(error).context("failed to copy collector update beside installed executable");
+        }
+
+        preserve_executable_permissions(&self.staged_executable, install_executable)?;
+        sync_file(install_executable)?;
+
+        let installed_hash = sha256_file(install_executable)?;
+
+        if installed_hash != self.expected_sha256 {
+            remove_if_exists(install_executable)?;
+            bail!("prepared collector update SHA-256 does not match signed release metadata");
+        }
+
+        Ok(())
     }
 
     fn verify_updated_process(&self, child: &mut Child) -> Option<anyhow::Error> {
@@ -206,6 +270,11 @@ impl ApplyUpdateCommand {
 
         require_safe_update_path(&self.staged_executable)?;
         require_safe_health_path(&self.health_file)?;
+        validate_sha256(&self.expected_sha256)?;
+
+        if self.parent_pid == 0 || self.parent_pid == std::process::id() {
+            bail!("collector update parent PID is invalid");
+        }
 
         let expected_backup = backup_path(&self.current_executable, self.health_token)?;
 
@@ -227,11 +296,16 @@ impl ApplyUpdateCommand {
 pub struct UpdateHandoff;
 
 impl UpdateHandoff {
-    pub fn start(staged_executable: &Path) -> Result<()> {
+    pub fn start(staged_executable: &Path, expected_sha256: &str) -> Result<()> {
         require_safe_update_path(staged_executable)?;
+        validate_sha256(expected_sha256)?;
 
         if !staged_executable.is_file() {
             bail!("staged collector update executable does not exist");
+        }
+
+        if sha256_file(staged_executable)? != expected_sha256 {
+            bail!("staged collector update SHA-256 changed before updater handoff");
         }
 
         let current_executable =
@@ -246,6 +320,7 @@ impl UpdateHandoff {
         let backup_executable = backup_path(&current_executable, health_token)?;
         let helper = helper_path()?;
         let health_file = health_file_path()?;
+        let parent_pid = std::process::id();
 
         fs::create_dir_all(update_directory()?)
             .context("failed to create collector update directory")?;
@@ -266,6 +341,10 @@ impl UpdateHandoff {
             .arg(&health_file)
             .arg(HEALTH_TOKEN_ARGUMENT)
             .arg(health_token.to_string())
+            .arg(EXPECTED_SHA256_ARGUMENT)
+            .arg(expected_sha256)
+            .arg(PARENT_PID_ARGUMENT)
+            .arg(parent_pid.to_string())
             .spawn();
 
         match spawn_result {
@@ -311,6 +390,12 @@ pub async fn cleanup_helper_when_possible(helper: PathBuf) {
     }
 }
 
+fn restart_current(executable: &Path, helper: &Path) -> Result<()> {
+    launch_collector(executable, None, helper)
+        .map(|_| ())
+        .context("failed to restart previous collector executable")
+}
+
 fn launch_collector(
     executable: &Path,
     health: Option<(&Path, Uuid)>,
@@ -331,6 +416,24 @@ fn launch_collector(
     command
         .spawn()
         .with_context(|| format!("failed to launch {}", executable.display()))
+}
+
+fn wait_for_parent_exit(parent_pid: u32, timeout: Duration) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    let pid = Pid::from_u32(parent_pid);
+    let mut system = System::new();
+
+    while Instant::now() < deadline {
+        system.refresh_processes(ProcessesToUpdate::All, true);
+
+        if system.process(pid).is_none() {
+            return Ok(());
+        }
+
+        thread::sleep(RETRY_INTERVAL);
+    }
+
+    bail!("timed out waiting for previous collector process to exit")
 }
 
 fn wait_for_health(

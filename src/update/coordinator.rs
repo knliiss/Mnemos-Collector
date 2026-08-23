@@ -35,6 +35,10 @@ impl UpdateHandoffRequest {
     pub fn staged_executable(&self) -> &Path {
         &self.pending.staged_executable
     }
+
+    pub fn expected_sha256(&self) -> &str {
+        &self.pending.candidate.artifact.sha256
+    }
 }
 
 pub struct UpdateCoordinator {

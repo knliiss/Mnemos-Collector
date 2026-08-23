@@ -26,15 +26,11 @@ pub fn health_file_path() -> Result<PathBuf> {
 }
 
 pub fn backup_path(current_executable: &Path, update_id: Uuid) -> Result<PathBuf> {
-    let parent = current_executable
-        .parent()
-        .context("collector executable path has no parent directory")?;
-    let file_name = current_executable
-        .file_name()
-        .context("collector executable path has no file name")?
-        .to_string_lossy();
+    sibling_update_path(current_executable, "rollback", update_id)
+}
 
-    Ok(parent.join(format!("{file_name}.rollback-{update_id}")))
+pub fn install_path(current_executable: &Path, update_id: Uuid) -> Result<PathBuf> {
+    sibling_update_path(current_executable, "install", update_id)
 }
 
 pub fn require_safe_update_path(path: &Path) -> Result<()> {
@@ -84,12 +80,24 @@ pub fn require_safe_health_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn sibling_update_path(current_executable: &Path, kind: &str, update_id: Uuid) -> Result<PathBuf> {
+    let parent = current_executable
+        .parent()
+        .context("collector executable path has no parent directory")?;
+    let file_name = current_executable
+        .file_name()
+        .context("collector executable path has no file name")?
+        .to_string_lossy();
+
+    Ok(parent.join(format!("{file_name}.{kind}-{update_id}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn backup_stays_next_to_running_binary_and_is_unique() {
+    fn replacement_files_stay_next_to_running_binary_and_are_unique() {
         let current = if cfg!(windows) {
             PathBuf::from(r"C:\Mnemos\mnemos-collector.exe")
         } else {
@@ -98,11 +106,15 @@ mod tests {
         let first_id = Uuid::parse_str("019c1129-ef54-7000-8000-000000000301").unwrap();
         let second_id = Uuid::parse_str("019c1129-ef54-7000-8000-000000000302").unwrap();
 
-        let first = backup_path(&current, first_id).unwrap();
-        let second = backup_path(&current, second_id).unwrap();
+        let first_backup = backup_path(&current, first_id).unwrap();
+        let second_backup = backup_path(&current, second_id).unwrap();
+        let install = install_path(&current, first_id).unwrap();
 
-        assert_eq!(first.parent(), current.parent());
-        assert_ne!(first, second);
-        assert!(first.to_string_lossy().contains(".rollback-"));
+        assert_eq!(first_backup.parent(), current.parent());
+        assert_eq!(install.parent(), current.parent());
+        assert_ne!(first_backup, second_backup);
+        assert_ne!(first_backup, install);
+        assert!(first_backup.to_string_lossy().contains(".rollback-"));
+        assert!(install.to_string_lossy().contains(".install-"));
     }
 }
