@@ -37,3 +37,65 @@ jobs:
 
       - name: Run tests
         run: cargo test --locked --all-targets --all-features
+
+  release-signing-contract:
+    name: release-signing-contract
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Verify Ed25519 release signing commands
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          private_key="$RUNNER_TEMP/collector-update-private.pem"
+          public_key="$RUNNER_TEMP/collector-update-public.pem"
+          payload="$RUNNER_TEMP/collector-update-payload.txt"
+          signature="$RUNNER_TEMP/collector-update-signature.bin"
+
+          openssl genpkey \
+            -algorithm ED25519 \
+            -out "$private_key"
+
+          openssl pkey \
+            -in "$private_key" \
+            -pubout \
+            -out "$public_key"
+
+          encoded_public_key="$(
+            openssl pkey -in "$private_key" -pubout -outform DER \
+              | tail -c 32 \
+              | base64 \
+              | tr -d '\r\n'
+          )"
+          public_key_bytes="$(printf '%s' "$encoded_public_key" | base64 --decode | wc -c | tr -d ' ')"
+
+          if [ "$public_key_bytes" != "32" ]; then
+            echo "Derived Ed25519 public key must contain exactly 32 raw bytes."
+            exit 1
+          fi
+
+          printf 'mnemos-collector-update-v1\n0.2.0\nlinux-x86_64\nb2e64f429b4ede4f8873ae95cc9e31fcc21905da23acd0d42bb47c48db1e0acb\n' \
+            > "$payload"
+
+          openssl pkeyutl \
+            -sign \
+            -rawin \
+            -inkey "$private_key" \
+            -in "$payload" \
+            -out "$signature"
+
+          signature_bytes="$(wc -c < "$signature" | tr -d ' ')"
+
+          if [ "$signature_bytes" != "64" ]; then
+            echo "Ed25519 release signature must contain exactly 64 raw bytes."
+            exit 1
+          fi
+
+          openssl pkeyutl \
+            -verify \
+            -rawin \
+            -pubin \
+            -inkey "$public_key" \
+            -in "$payload" \
+            -sigfile "$signature"
