@@ -38,10 +38,11 @@ pub fn require_safe_update_path(path: &Path) -> Result<()> {
         bail!("collector update path must be absolute");
     }
 
-    let expected_parent = update_directory()?;
+    let expected_parent = normalize_directory(&update_directory()?);
     let parent = path
         .parent()
         .context("collector update path has no parent directory")?;
+    let parent = normalize_directory(parent);
 
     if parent != expected_parent {
         bail!("collector update path is outside the collector update directory");
@@ -78,6 +79,10 @@ pub fn require_safe_health_path(path: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn normalize_directory(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn sibling_update_path(current_executable: &Path, kind: &str, update_id: Uuid) -> Result<PathBuf> {
