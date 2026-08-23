@@ -1,5 +1,8 @@
 pub mod application;
 pub mod cristalix;
+#[cfg(target_os = "windows")]
+pub mod desktop;
+pub mod diagnostics;
 pub mod launch;
 pub mod parser;
 pub mod platform;

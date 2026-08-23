@@ -9,6 +9,7 @@ use tokio::time::{MissedTickBehavior, interval};
 use crate::cristalix::{
     CristalixProcessDetector, LogTailer, discover_latest_log, scan_existing_log_lines,
 };
+use crate::diagnostics;
 use crate::parser::{EventDeduplicator, GameMode, LogParser};
 use crate::protocol::CollectorEvent;
 use crate::realtime::{RealtimeClient, RealtimeConfig};
@@ -73,6 +74,14 @@ impl CollectorApplication {
             .context("failed to initialize collector update coordinator")?;
         let now = Instant::now();
 
+        diagnostics::info(
+            "runtime",
+            format!("Collector worker initialized for credential {collector_id}"),
+        );
+        diagnostics::set_game_mode("Unknown");
+        diagnostics::set_realtime_connected(false);
+        diagnostics::set_observing(false);
+
         Ok(Self {
             reconnect_delay: config.reconnect_initial_delay,
             config,
@@ -94,6 +103,8 @@ impl CollectorApplication {
     }
 
     pub async fn run(mut self) -> Result<()> {
+        diagnostics::info("runtime", "Collector event loop started");
+
         let mut ticker = interval(self.config.log_poll_interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -101,11 +112,13 @@ impl CollectorApplication {
             tokio::select! {
                 _ = ticker.tick() => {
                     if self.tick().await? {
+                        diagnostics::info("update", "Collector handed off to updater");
                         return Ok(());
                     }
                 }
                 result = signal::ctrl_c() => {
                     result.context("failed to listen for shutdown signal")?;
+                    diagnostics::info("runtime", "Shutdown signal received");
                     self.shutdown().await;
                     return Ok(());
                 }
@@ -146,7 +159,25 @@ impl CollectorApplication {
 
         let snapshot = self.process_detector.inspect();
         let candidates_changed = snapshot.latest_log_candidates != self.process_log_candidates;
+        let running_changed = snapshot.running != self.process_running;
 
+        if running_changed || candidates_changed {
+            diagnostics::debug(
+                "cristalix",
+                format!(
+                    "Process scan: running={}, latest.log candidates={}{}",
+                    snapshot.running,
+                    snapshot.latest_log_candidates.len(),
+                    if snapshot.running && snapshot.latest_log_candidates.is_empty() {
+                        ". Hint: process was found, but no log path could be derived from its command line; fallback discovery will be used"
+                    } else {
+                        ""
+                    },
+                ),
+            );
+        }
+
+        diagnostics::set_cristalix_running(snapshot.running);
         self.process_log_candidates = snapshot.latest_log_candidates;
 
         let tailer_points_to_running_process = self.tailer.as_ref().is_none_or(|tailer| {
@@ -158,9 +189,15 @@ impl CollectorApplication {
         });
 
         if candidates_changed && !tailer_points_to_running_process {
+            diagnostics::debug(
+                "cristalix",
+                "Cristalix log source changed; parser context will be rebuilt without replaying historical events",
+            );
             self.parser = LogParser::default();
             self.tailer = None;
             self.cached_log_path = None;
+            diagnostics::set_game_mode("Unknown");
+            diagnostics::set_log_path(None);
             self.pause_connection().await;
         }
 
@@ -171,16 +208,22 @@ impl CollectorApplication {
         self.process_running = snapshot.running;
 
         if snapshot.running {
+            diagnostics::info("cristalix", "Cristalix game process detected");
             self.parser = LogParser::default();
             self.tailer = None;
+            diagnostics::set_game_mode("Unknown");
             return Ok(());
         }
+
+        diagnostics::info("cristalix", "Cristalix game process is no longer running");
 
         let pending_events = self.parser.flush();
 
         self.enqueue_events(pending_events).await?;
         self.parser = LogParser::default();
         self.tailer = None;
+        diagnostics::set_game_mode("Unknown");
+        diagnostics::set_log_path(None);
         self.pause_connection().await;
 
         Ok(())
@@ -195,16 +238,24 @@ impl CollectorApplication {
             self.cached_log_path.as_deref(),
             &self.process_log_candidates,
         ) else {
+            diagnostics::set_log_path(None);
             return Ok(());
         };
+
+        diagnostics::debug(
+            "cristalix",
+            format!("Selected latest.log: {}", path.display()),
+        );
 
         match LogTailer::open_from_end(&path).await {
             Ok(tailer) => {
                 self.bootstrap_parser_from_log(&path).await?;
-                self.cached_log_path = Some(path);
+                self.cached_log_path = Some(path.clone());
                 self.tailer = Some(tailer);
+                diagnostics::set_log_path(Some(path));
             }
             Err(error) => {
+                diagnostics::set_log_path(None);
                 self.cached_log_path = None;
                 return Err(error).context("failed to start latest.log tailing");
             }
@@ -224,6 +275,26 @@ impl CollectorApplication {
                     path.display()
                 )
             })?;
+
+        let mode = parser.mode();
+
+        diagnostics::set_game_mode(format!("{mode:?}"));
+        diagnostics::info(
+            "parser",
+            format!("Recovered game mode from existing latest.log: {mode:?}"),
+        );
+
+        if mode != GameMode::MasterSword {
+            diagnostics::debug(
+                "parser",
+                "Hint: Collector remains PAUSED until Master Sword context is recognized. Check the selected latest.log and the most recent 'Joining server' lines in the log viewer.",
+            );
+        } else {
+            diagnostics::debug(
+                "parser",
+                "Existing log already proves the user is in Master Sword; no reconnect or mode re-entry is required",
+            );
+        }
 
         self.parser = parser;
 
@@ -245,21 +316,28 @@ impl CollectorApplication {
 
         let (lines, source_reset) = match read_result {
             Ok(result) => result,
-            Err(_) => {
+            Err(error) => {
+                diagnostics::warn(
+                    "cristalix",
+                    format!("latest.log read failed and will be rediscovered: {error:#}"),
+                );
                 self.parser = LogParser::default();
                 self.tailer = None;
                 self.cached_log_path = None;
+                diagnostics::set_game_mode("Unknown");
+                diagnostics::set_log_path(None);
                 self.pause_connection().await;
                 return Ok(());
             }
         };
 
         if source_reset {
-            let path = self
-                .tailer
-                .as_ref()
-                .map(|tailer| tailer.path().to_path_buf());
+            let path = self.tailer.as_ref().map(|tailer| tailer.path().to_path_buf());
 
+            diagnostics::debug(
+                "cristalix",
+                "latest.log was replaced or truncated; rebuilding mode context without replaying historical events",
+            );
             self.parser = LogParser::default();
 
             if let Some(path) = path {
@@ -275,6 +353,14 @@ impl CollectorApplication {
             let events = self.parser.consume_line(&line);
             let current_mode = self.parser.mode();
 
+            if previous_mode != current_mode {
+                diagnostics::info(
+                    "parser",
+                    format!("Game mode changed: {previous_mode:?} -> {current_mode:?}"),
+                );
+                diagnostics::set_game_mode(format!("{current_mode:?}"));
+            }
+
             self.enqueue_events(events).await?;
 
             if previous_mode == GameMode::MasterSword && current_mode != GameMode::MasterSword {
@@ -288,8 +374,11 @@ impl CollectorApplication {
     async fn enqueue_events(&mut self, events: Vec<CollectorEvent>) -> Result<()> {
         for event in events {
             if !self.deduplicator.accept(&event, Instant::now()) {
+                diagnostics::debug("events", "Duplicate collector event suppressed locally");
                 continue;
             }
+
+            diagnostics::debug("events", format!("Persisting observed event: {event:?}"));
 
             self.spool
                 .enqueue(PendingReport::new(event, Utc::now()))
@@ -310,6 +399,7 @@ impl CollectorApplication {
         }
 
         if self.realtime.is_some() {
+            diagnostics::set_realtime_connected(false);
             self.realtime = None;
             self.schedule_reconnect();
         }
@@ -318,24 +408,53 @@ impl CollectorApplication {
             return;
         }
 
+        diagnostics::debug(
+            "realtime",
+            format!("Connecting to {}", self.realtime_config.endpoint),
+        );
+
         match RealtimeClient::connect(&self.realtime_config, &self.access_key).await {
             Ok(client) => {
+                diagnostics::info("realtime", "Authenticated WebSocket connected");
+                diagnostics::set_realtime_connected(true);
                 self.realtime = Some(client);
                 self.reconnect_delay = self.config.reconnect_initial_delay;
                 self.next_reconnect_at = Instant::now();
             }
-            Err(_) => self.schedule_reconnect(),
+            Err(error) => {
+                diagnostics::warn(
+                    "realtime",
+                    format!("WebSocket connection failed: {error:#}"),
+                );
+                diagnostics::set_realtime_connected(false);
+                self.schedule_reconnect();
+            }
         }
     }
 
     async fn observe_connection(&mut self) {
         let Some(client) = self.realtime.as_mut() else {
+            diagnostics::set_observing(false);
             return;
         };
+        let was_observing = diagnostics::runtime_snapshot().observing;
 
         if client.observe().await.is_err() {
+            diagnostics::warn(
+                "realtime",
+                "OBSERVING transition failed; connection will be re-established",
+            );
+            diagnostics::set_realtime_connected(false);
+            diagnostics::set_observing(false);
             self.realtime = None;
             self.schedule_reconnect();
+            return;
+        }
+
+        diagnostics::set_observing(true);
+
+        if !was_observing {
+            diagnostics::info("realtime", "realtime-service acknowledged OBSERVING");
         }
     }
 
@@ -349,11 +468,22 @@ impl CollectorApplication {
             };
             let report = pending.to_event_report();
 
-            if client.report(&report).await.is_err() {
+            if let Err(error) = client.report(&report).await {
+                diagnostics::warn(
+                    "events",
+                    format!("Event delivery failed and will retry after reconnect: {error:#}"),
+                );
+                diagnostics::set_realtime_connected(false);
+                diagnostics::set_observing(false);
                 self.realtime = None;
                 self.schedule_reconnect();
                 return Ok(());
             }
+
+            diagnostics::debug(
+                "events",
+                format!("realtime-service queued report {}", pending.message_id),
+            );
 
             self.spool
                 .acknowledge(pending.message_id)
@@ -365,13 +495,22 @@ impl CollectorApplication {
     }
 
     async fn pause_connection(&mut self) {
+        let was_observing = diagnostics::runtime_snapshot().observing;
+        diagnostics::set_observing(false);
+
         let Some(client) = self.realtime.as_mut() else {
             return;
         };
 
         if client.pause().await.is_err() {
+            diagnostics::set_realtime_connected(false);
             self.realtime = None;
             self.schedule_reconnect();
+            return;
+        }
+
+        if was_observing {
+            diagnostics::info("realtime", "realtime-service acknowledged PAUSED");
         }
     }
 
@@ -390,11 +529,14 @@ impl CollectorApplication {
                 self.update_coordinator = Some(coordinator);
                 return false;
             }
-            Err(_) => {
+            Err(error) => {
+                diagnostics::debug("update", format!("Update poll deferred after error: {error:#}"));
                 coordinator.defer_after_error();
                 self.update_coordinator = Some(coordinator);
 
                 if had_pending_update {
+                    diagnostics::set_realtime_connected(false);
+                    diagnostics::set_observing(false);
                     self.realtime = None;
                     self.schedule_reconnect();
                 }
@@ -406,12 +548,15 @@ impl CollectorApplication {
         let handoff_result =
             UpdateHandoff::start(request.staged_executable(), request.expected_sha256());
 
-        if handoff_result.is_err() {
+        if let Err(error) = handoff_result {
+            diagnostics::warn("update", format!("Updater handoff failed: {error:#}"));
             coordinator.restore_handoff(request);
             self.update_coordinator = Some(coordinator);
             return false;
         }
 
+        diagnostics::set_realtime_connected(false);
+        diagnostics::set_observing(false);
         self.realtime = None;
 
         true
@@ -419,6 +564,11 @@ impl CollectorApplication {
 
     fn schedule_reconnect(&mut self) {
         let now = Instant::now();
+
+        diagnostics::debug(
+            "realtime",
+            format!("Next WebSocket reconnect in {:?}", self.reconnect_delay),
+        );
 
         self.next_reconnect_at = now + self.reconnect_delay;
         self.reconnect_delay = self
@@ -437,5 +587,7 @@ impl CollectorApplication {
 
         let _ = client.pause().await;
         let _ = client.close().await;
+        diagnostics::set_realtime_connected(false);
+        diagnostics::set_observing(false);
     }
 }

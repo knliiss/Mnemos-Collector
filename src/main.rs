@@ -2,6 +2,9 @@
 
 use anyhow::{Context, Result, bail};
 use mnemos_collector::application::CollectorApplication;
+#[cfg(target_os = "windows")]
+use mnemos_collector::desktop::{self, DesktopLaunchContext};
+use mnemos_collector::diagnostics;
 use mnemos_collector::launch::LaunchArguments;
 use mnemos_collector::platform::{Autostart, Installation};
 use mnemos_collector::provisioning::{ProvisioningClient, default_device_name};
@@ -11,8 +14,25 @@ use mnemos_collector::update::{
 };
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    diagnostics::initialize();
+    diagnostics::install_panic_hook();
+
+    if let Err(error) = run().await {
+        let message = format!("{error:#}");
+
+        diagnostics::error("startup", message.clone());
+
+        #[cfg(target_os = "windows")]
+        desktop::show_fatal_error(&message);
+
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<()> {
     if let Some(command) = ApplyUpdateCommand::parse_environment()? {
+        diagnostics::info("update", "Starting internal collector update helper");
         return command.run();
     }
 
@@ -23,6 +43,8 @@ async fn main() -> Result<()> {
             .activation_token
             .as_deref()
             .context("collector installation requires an activation token")?;
+
+        diagnostics::info("installation", "Installing Collector into the stable per-user location");
 
         Installation::install_and_launch(activation_token, arguments.device_name.as_deref())
             .context("failed to install Mnemos Collector")?;
@@ -40,7 +62,12 @@ async fn main() -> Result<()> {
     }
 
     if let Some(activation_token) = arguments.activation_token.as_deref() {
-        let device_name = arguments.device_name.unwrap_or_else(default_device_name);
+        let device_name = arguments
+            .device_name
+            .clone()
+            .unwrap_or_else(default_device_name);
+
+        diagnostics::info("provisioning", "Provisioning Collector from command-line activation token");
 
         ProvisioningClient::new()?
             .provision(activation_token, &device_name)
@@ -48,20 +75,48 @@ async fn main() -> Result<()> {
             .context("failed to provision this collector installation")?;
     }
 
-    let access_key = CredentialStore.load()?.context(
-        "collector is not provisioned; run the installer with --install --activation-token <TOKEN>",
-    )?;
+    let access_key = CredentialStore.load()?;
 
-    if !current_installation {
+    if !current_installation && access_key.is_some() {
+        diagnostics::info("installation", "Migrating provisioned Collector into stable installation");
+
         Installation::migrate_existing_and_launch()
             .context("failed to migrate collector to stable installation")?;
 
         return Ok(());
     }
 
-    Autostart::ensure_enabled().context("failed to ensure collector autostart")?;
+    #[cfg(target_os = "windows")]
+    {
+        if access_key.is_some() {
+            prepare_provisioned_startup(&arguments)?;
+        }
 
-    let application = CollectorApplication::new(access_key).await?;
+        return desktop::run(
+            DesktopLaunchContext {
+                current_installation,
+                access_key,
+            },
+            tokio::runtime::Handle::current(),
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let access_key = access_key.context(
+            "collector is not provisioned; run the installer with --install --activation-token <TOKEN>",
+        )?;
+
+        prepare_provisioned_startup(&arguments)?;
+
+        let application = CollectorApplication::new(access_key).await?;
+
+        application.run().await
+    }
+}
+
+fn prepare_provisioned_startup(arguments: &LaunchArguments) -> Result<()> {
+    Autostart::ensure_enabled().context("failed to ensure collector autostart")?;
 
     if let (Some(health_file), Some(health_token)) = (
         arguments.update_health_file.as_deref(),
@@ -71,9 +126,9 @@ async fn main() -> Result<()> {
             .context("failed to acknowledge updated collector startup")?;
     }
 
-    if let Some(helper) = arguments.cleanup_helper {
+    if let Some(helper) = arguments.cleanup_helper.clone() {
         tokio::spawn(cleanup_helper_when_possible(helper));
     }
 
-    application.run().await
+    Ok(())
 }

@@ -1,7 +1,11 @@
 use anyhow::{Context, Result, bail};
+#[cfg(not(target_os = "windows"))]
 use keyring::{Entry, Error as KeyringError};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+#[cfg(target_os = "windows")]
+mod windows;
 
 const KEYRING_SERVICE: &str = "mnemos-collector";
 const ACCESS_KEY_ACCOUNT: &str = "collector-access-key";
@@ -13,26 +17,49 @@ pub struct CredentialStore;
 
 impl CredentialStore {
     pub fn load(self) -> Result<Option<String>> {
-        let entry = Entry::new(KEYRING_SERVICE, ACCESS_KEY_ACCOUNT)
-            .context("failed to open the operating-system credential store")?;
+        #[cfg(target_os = "windows")]
+        {
+            let access_key = windows::load(&credential_target(ACCESS_KEY_ACCOUNT))?;
 
-        match entry.get_password() {
-            Ok(access_key) => {
-                validate_access_key(&access_key)?;
-                Ok(Some(access_key))
+            if let Some(access_key) = access_key.as_deref() {
+                validate_access_key(access_key)?;
             }
-            Err(KeyringError::NoEntry) => Ok(None),
-            Err(error) => Err(error).context("failed to read collector access key"),
+
+            return Ok(access_key);
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let entry = Entry::new(KEYRING_SERVICE, ACCESS_KEY_ACCOUNT)
+                .context("failed to open the operating-system credential store")?;
+
+            match entry.get_password() {
+                Ok(access_key) => {
+                    validate_access_key(&access_key)?;
+                    Ok(Some(access_key))
+                }
+                Err(KeyringError::NoEntry) => Ok(None),
+                Err(error) => Err(error).context("failed to read collector access key"),
+            }
         }
     }
 
     pub fn save(self, access_key: &str) -> Result<()> {
         validate_access_key(access_key)?;
 
-        Entry::new(KEYRING_SERVICE, ACCESS_KEY_ACCOUNT)
-            .context("failed to open the operating-system credential store")?
-            .set_password(access_key)
-            .context("failed to save collector access key")
+        #[cfg(target_os = "windows")]
+        {
+            return windows::save(&credential_target(ACCESS_KEY_ACCOUNT), access_key)
+                .context("failed to save collector access key");
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            Entry::new(KEYRING_SERVICE, ACCESS_KEY_ACCOUNT)
+                .context("failed to open the operating-system credential store")?
+                .set_password(access_key)
+                .context("failed to save collector access key")
+        }
     }
 }
 
@@ -48,13 +75,25 @@ pub struct PendingProvisioningStore;
 
 impl PendingProvisioningStore {
     pub fn load(self) -> Result<Option<PendingProvisioningSecret>> {
-        let entry = Entry::new(KEYRING_SERVICE, PENDING_PROVISIONING_ACCOUNT)
-            .context("failed to open the operating-system credential store")?;
+        #[cfg(target_os = "windows")]
+        let encoded = windows::load(&credential_target(PENDING_PROVISIONING_ACCOUNT))?;
 
-        let encoded = match entry.get_password() {
-            Ok(encoded) => encoded,
-            Err(KeyringError::NoEntry) => return Ok(None),
-            Err(error) => return Err(error).context("failed to read pending provisioning secret"),
+        #[cfg(not(target_os = "windows"))]
+        let encoded = {
+            let entry = Entry::new(KEYRING_SERVICE, PENDING_PROVISIONING_ACCOUNT)
+                .context("failed to open the operating-system credential store")?;
+
+            match entry.get_password() {
+                Ok(encoded) => Some(encoded),
+                Err(KeyringError::NoEntry) => None,
+                Err(error) => {
+                    return Err(error).context("failed to read pending provisioning secret");
+                }
+            }
+        };
+
+        let Some(encoded) = encoded else {
+            return Ok(None);
         };
         let pending: PendingProvisioningSecret =
             serde_json::from_str(&encoded).context("pending provisioning secret is corrupted")?;
@@ -79,19 +118,37 @@ impl PendingProvisioningStore {
         let encoded = serde_json::to_string(pending)
             .context("failed to encode pending provisioning secret")?;
 
-        Entry::new(KEYRING_SERVICE, PENDING_PROVISIONING_ACCOUNT)
-            .context("failed to open the operating-system credential store")?
-            .set_password(&encoded)
-            .context("failed to save pending provisioning secret")
+        #[cfg(target_os = "windows")]
+        {
+            return windows::save(&credential_target(PENDING_PROVISIONING_ACCOUNT), &encoded)
+                .context("failed to save pending provisioning secret");
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            Entry::new(KEYRING_SERVICE, PENDING_PROVISIONING_ACCOUNT)
+                .context("failed to open the operating-system credential store")?
+                .set_password(&encoded)
+                .context("failed to save pending provisioning secret")
+        }
     }
 
     pub fn clear(self) -> Result<()> {
-        let entry = Entry::new(KEYRING_SERVICE, PENDING_PROVISIONING_ACCOUNT)
-            .context("failed to open the operating-system credential store")?;
+        #[cfg(target_os = "windows")]
+        {
+            return windows::delete(&credential_target(PENDING_PROVISIONING_ACCOUNT))
+                .context("failed to clear pending provisioning secret");
+        }
 
-        match entry.delete_credential() {
-            Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
-            Err(error) => Err(error).context("failed to clear pending provisioning secret"),
+        #[cfg(not(target_os = "windows"))]
+        {
+            let entry = Entry::new(KEYRING_SERVICE, PENDING_PROVISIONING_ACCOUNT)
+                .context("failed to open the operating-system credential store")?;
+
+            match entry.delete_credential() {
+                Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
+                Err(error) => Err(error).context("failed to clear pending provisioning secret"),
+            }
         }
     }
 }
@@ -120,6 +177,10 @@ pub fn validate_secret(secret: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn credential_target(account: &str) -> String {
+    format!("{KEYRING_SERVICE}:{account}")
 }
 
 fn split_access_key(access_key: &str) -> Result<(&str, &str)> {
