@@ -25,7 +25,7 @@ impl CredentialStore {
                 validate_access_key(access_key)?;
             }
 
-            return Ok(access_key);
+            Ok(access_key)
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -49,12 +49,12 @@ impl CredentialStore {
 
         #[cfg(target_os = "windows")]
         {
-            return windows::save(
+            windows::save(
                 &credential_target(ACCESS_KEY_ACCOUNT),
                 ACCESS_KEY_ACCOUNT,
                 access_key,
             )
-            .context("failed to save collector access key");
+            .context("failed to save collector access key")
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -124,12 +124,12 @@ impl PendingProvisioningStore {
 
         #[cfg(target_os = "windows")]
         {
-            return windows::save(
+            windows::save(
                 &credential_target(PENDING_PROVISIONING_ACCOUNT),
                 PENDING_PROVISIONING_ACCOUNT,
                 &encoded,
             )
-            .context("failed to save pending provisioning secret");
+            .context("failed to save pending provisioning secret")
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -144,8 +144,8 @@ impl PendingProvisioningStore {
     pub fn clear(self) -> Result<()> {
         #[cfg(target_os = "windows")]
         {
-            return windows::delete(&credential_target(PENDING_PROVISIONING_ACCOUNT))
-                .context("failed to clear pending provisioning secret");
+            windows::delete(&credential_target(PENDING_PROVISIONING_ACCOUNT))
+                .context("failed to clear pending provisioning secret")
         }
 
         #[cfg(not(target_os = "windows"))]
