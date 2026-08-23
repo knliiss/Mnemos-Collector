@@ -81,9 +81,14 @@ jobs:
       - name: Build release collector
         shell: bash
         env:
-          MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY: A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
+          MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
         run: |
           set -euo pipefail
+
+          if [ -z "${MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY:-}" ]; then
+            echo "MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY repository variable is required."
+            exit 1
+          fi
 
           cargo +1.98.0 build \
             --locked \
@@ -176,3 +181,82 @@ jobs:
             -inkey "$public_key" \
             -in "$payload" \
             -sigfile "$signature"
+
+  production-signing-config:
+    name: production-signing-config
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+
+    env:
+      UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
+      UPDATE_PRIVATE_KEY: ${{ secrets.MNEMOS_COLLECTOR_UPDATE_PRIVATE_KEY_PEM }}
+
+    steps:
+      - name: Verify configured Ed25519 signing key pair
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${UPDATE_PUBLIC_KEY:-}" ]; then
+            echo "MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY repository variable is required."
+            exit 1
+          fi
+
+          if [ -z "${UPDATE_PRIVATE_KEY:-}" ]; then
+            echo "MNEMOS_COLLECTOR_UPDATE_PRIVATE_KEY_PEM Actions secret is required."
+            exit 1
+          fi
+
+          private_key="$RUNNER_TEMP/mnemos-collector-update-private.pem"
+          public_key="$RUNNER_TEMP/mnemos-collector-update-public.pem"
+          payload="$RUNNER_TEMP/mnemos-collector-update-payload.txt"
+          signature="$RUNNER_TEMP/mnemos-collector-update-signature.bin"
+
+          printf '%s' "$UPDATE_PRIVATE_KEY" > "$private_key"
+          chmod 600 "$private_key"
+
+          derived_public_key="$(
+            openssl pkey -in "$private_key" -pubout -outform DER \
+              | tail -c 32 \
+              | base64 \
+              | tr -d '\r\n'
+          )"
+          public_key_bytes="$(printf '%s' "$UPDATE_PUBLIC_KEY" | base64 --decode | wc -c | tr -d ' ')"
+
+          if [ "$public_key_bytes" != "32" ]; then
+            echo "MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY must be base64 for exactly 32 raw Ed25519 public-key bytes."
+            exit 1
+          fi
+
+          if [ "$derived_public_key" != "$UPDATE_PUBLIC_KEY" ]; then
+            echo "Configured collector signing private key does not match MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY."
+            exit 1
+          fi
+
+          openssl pkey \
+            -in "$private_key" \
+            -pubout \
+            -out "$public_key"
+
+          printf 'mnemos-collector-update-v1\n0.1.0\nlinux-x86_64\nb2e64f429b4ede4f8873ae95cc9e31fcc21905da23acd0d42bb47c48db1e0acb\n' \
+            > "$payload"
+
+          openssl pkeyutl \
+            -sign \
+            -rawin \
+            -inkey "$private_key" \
+            -in "$payload" \
+            -out "$signature"
+
+          openssl pkeyutl \
+            -verify \
+            -rawin \
+            -pubin \
+            -inkey "$public_key" \
+            -in "$payload" \
+            -sigfile "$signature"
+
+      - name: Remove signing key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/mnemos-collector-update-private.pem"
