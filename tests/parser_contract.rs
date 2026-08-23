@@ -63,11 +63,13 @@ fn parses_supported_drop_types_and_grammatical_rarity_forms() {
     for (payload, expected_type, expected_rarity) in cases {
         let mut parser = LogParser::default();
         let events = parser.consume_line(&chat(payload));
-        let [CollectorEvent::ItemDrop {
-            item_type,
-            item_rarity,
-            ..
-        }] = events.as_slice()
+        let [
+            CollectorEvent::ItemDrop {
+                item_type,
+                item_rarity,
+                ..
+            },
+        ] = events.as_slice()
         else {
             panic!("expected one item drop for {payload}");
         };
@@ -108,9 +110,7 @@ fn parses_all_supported_booster_types() {
 
     for (name, expected) in cases {
         let mut parser = LogParser::default();
-        let payload = format!(
-            "MVP+ ┃ Booster_User активировал \"Бустер {name} x1.25\" на 30м"
-        );
+        let payload = format!("MVP+ ┃ Booster_User активировал \"Бустер {name} x1.25\" на 30м");
 
         assert_eq!(
             parser.consume_line(&chat(&payload)),
@@ -186,9 +186,7 @@ fn collects_only_raid_location_numbers() {
 #[test]
 fn blocks_events_in_other_modes_and_accepts_them_after_master_sword_join() {
     let mut parser = LogParser::default();
-    let drop = chat(
-        "[Магистр] PlayerOne [#20] выбил \"Мифическое\" оружие Лесной меч",
-    );
+    let drop = chat("[Магистр] PlayerOne [#20] выбил \"Мифическое\" оружие Лесной меч");
 
     parser.consume_line("[INFO] Joining server Хаб");
     assert_eq!(parser.mode(), GameMode::Other);
