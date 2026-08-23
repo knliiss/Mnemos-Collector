@@ -134,9 +134,7 @@ fn launch_installed(
     let mut command = Command::new(target);
 
     if let Some(activation_token) = activation_token {
-        command
-            .arg("--activation-token")
-            .arg(activation_token);
+        command.arg("--activation-token").arg(activation_token);
     }
 
     if let Some(device_name) = device_name {
