@@ -1,5 +1,6 @@
 mod mascot;
-mod window;
+mod shell;
+mod theme;
 
 use anyhow::Result;
 use tokio::runtime::Handle;
@@ -10,9 +11,9 @@ pub struct DesktopLaunchContext {
 }
 
 pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
-    window::run(context, runtime)
+    shell::run(context, runtime)
 }
 
 pub fn show_fatal_error(message: &str) {
-    window::show_fatal_error(message);
+    shell::show_fatal_error(message);
 }
