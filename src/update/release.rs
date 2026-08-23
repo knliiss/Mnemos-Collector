@@ -6,7 +6,6 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use directories::ProjectDirs;
 use reqwest::Client;
 use ring::signature::{ED25519, UnparsedPublicKey};
 use serde::Deserialize;
@@ -15,11 +14,11 @@ use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
+use crate::update::paths::update_directory;
 use crate::update::version::CollectorVersion;
 
 const DEFAULT_MANIFEST_URL: &str =
     "https://github.com/knliiss/Mnemos-Collector/releases/latest/download/manifest.json";
-const UPDATE_DIRECTORY: &str = "updates";
 const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 const DEFAULT_MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_ROLLOUT_WINDOW: Duration = Duration::from_secs(30 * 60);
@@ -317,13 +316,6 @@ fn sha256_hex(value: &[u8]) -> String {
 
 fn platform_key() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
-}
-
-fn update_directory() -> Result<PathBuf> {
-    let project_dirs = ProjectDirs::from("rest", "knalis", "Mnemos Collector")
-        .context("operating system does not expose a local data directory")?;
-
-    Ok(project_dirs.data_local_dir().join(UPDATE_DIRECTORY))
 }
 
 fn staged_file_name(version: CollectorVersion) -> String {

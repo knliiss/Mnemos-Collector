@@ -10,7 +10,9 @@ use crate::cristalix::{CristalixProcessDetector, LogTailer, discover_latest_log}
 use crate::parser::{EventDeduplicator, GameMode, LogParser};
 use crate::protocol::CollectorEvent;
 use crate::realtime::{RealtimeClient, RealtimeConfig};
+use crate::security::credential_id_from_access_key;
 use crate::spool::{PendingReport, ReportSpool};
+use crate::update::{UpdateCoordinator, UpdateHandoff};
 
 const MAX_REPORTS_PER_TICK: usize = 16;
 
@@ -49,6 +51,7 @@ pub struct CollectorApplication {
     realtime: Option<RealtimeClient>,
     reconnect_delay: Duration,
     next_reconnect_at: Instant,
+    update_coordinator: Option<UpdateCoordinator>,
 }
 
 impl CollectorApplication {
@@ -63,6 +66,9 @@ impl CollectorApplication {
         let spool = ReportSpool::open_default()
             .await
             .context("failed to open reliable report spool")?;
+        let collector_id = credential_id_from_access_key(&access_key)?;
+        let update_coordinator = UpdateCoordinator::from_build(collector_id)
+            .context("failed to initialize collector update coordinator")?;
         let now = Instant::now();
 
         Ok(Self {
@@ -81,6 +87,7 @@ impl CollectorApplication {
             spool,
             realtime: None,
             next_reconnect_at: now,
+            update_coordinator,
         })
     }
 
@@ -90,7 +97,11 @@ impl CollectorApplication {
 
         loop {
             tokio::select! {
-                _ = ticker.tick() => self.tick().await?,
+                _ = ticker.tick() => {
+                    if self.tick().await? {
+                        return Ok(());
+                    }
+                }
                 result = signal::ctrl_c() => {
                     result.context("failed to listen for shutdown signal")?;
                     self.shutdown().await;
@@ -100,25 +111,26 @@ impl CollectorApplication {
         }
     }
 
-    async fn tick(&mut self) -> Result<()> {
+    async fn tick(&mut self) -> Result<bool> {
         self.refresh_process_state_if_due().await?;
         self.ensure_realtime_connection().await;
 
         if !self.process_running {
             self.pause_connection().await;
-            return Ok(());
+            return Ok(self.try_apply_update().await);
         }
 
         self.ensure_log_tailer().await?;
         self.read_log().await?;
 
         if self.parser.mode() == GameMode::MasterSword {
+            self.observe_connection().await;
             self.deliver_pending_reports().await?;
         } else {
             self.pause_connection().await;
         }
 
-        Ok(())
+        Ok(self.try_apply_update().await)
     }
 
     async fn refresh_process_state_if_due(&mut self) -> Result<()> {
@@ -286,6 +298,17 @@ impl CollectorApplication {
         }
     }
 
+    async fn observe_connection(&mut self) {
+        let Some(client) = self.realtime.as_mut() else {
+            return;
+        };
+
+        if client.observe().await.is_err() {
+            self.realtime = None;
+            self.schedule_reconnect();
+        }
+    }
+
     async fn deliver_pending_reports(&mut self) -> Result<()> {
         for _ in 0..MAX_REPORTS_PER_TICK {
             let Some(pending) = self.spool.front().cloned() else {
@@ -320,6 +343,47 @@ impl CollectorApplication {
             self.realtime = None;
             self.schedule_reconnect();
         }
+    }
+
+    async fn try_apply_update(&mut self) -> bool {
+        let Some(mut coordinator) = self.update_coordinator.take() else {
+            return false;
+        };
+        let had_pending_update = coordinator.has_pending_update();
+        let poll_result = coordinator
+            .poll(self.realtime.as_mut(), self.spool.is_empty())
+            .await;
+
+        let request = match poll_result {
+            Ok(Some(request)) => request,
+            Ok(None) => {
+                self.update_coordinator = Some(coordinator);
+                return false;
+            }
+            Err(_) => {
+                coordinator.defer_after_error();
+                self.update_coordinator = Some(coordinator);
+
+                if had_pending_update {
+                    self.realtime = None;
+                    self.schedule_reconnect();
+                }
+
+                return false;
+            }
+        };
+
+        if UpdateHandoff::start(request.staged_executable()).is_err() {
+            coordinator.restore_handoff(request);
+            self.update_coordinator = Some(coordinator);
+            return false;
+        }
+
+        if let Some(client) = self.realtime.take() {
+            let _ = client.close().await;
+        }
+
+        true
     }
 
     fn schedule_reconnect(&mut self) {

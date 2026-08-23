@@ -120,6 +120,14 @@ impl RealtimeClient {
         self.alive.load(Ordering::Acquire)
     }
 
+    pub async fn observe(&mut self) -> Result<()> {
+        if self.acknowledged_state == Some(ObservationState::Observing) {
+            return Ok(());
+        }
+
+        self.set_state(ObservationState::Observing).await
+    }
+
     pub async fn report(&mut self, report: &EventReport) -> Result<()> {
         self.set_state(ObservationState::Observing).await?;
         self.send_json(report).await?;

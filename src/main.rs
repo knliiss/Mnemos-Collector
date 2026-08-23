@@ -6,9 +6,16 @@ use mnemos_collector::launch::LaunchArguments;
 use mnemos_collector::platform::Autostart;
 use mnemos_collector::provisioning::{ProvisioningClient, default_device_name};
 use mnemos_collector::security::CredentialStore;
+use mnemos_collector::update::{
+    ApplyUpdateCommand, acknowledge_startup, cleanup_helper_when_possible,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if let Some(command) = ApplyUpdateCommand::parse_environment()? {
+        return command.run();
+    }
+
     let arguments = LaunchArguments::parse_environment()?;
 
     if let Some(activation_token) = arguments.activation_token.as_deref() {
@@ -26,5 +33,19 @@ async fn main() -> Result<()> {
 
     Autostart::ensure_enabled().context("failed to ensure collector autostart")?;
 
-    CollectorApplication::new(access_key).await?.run().await
+    let application = CollectorApplication::new(access_key).await?;
+
+    if let (Some(health_file), Some(health_token)) = (
+        arguments.update_health_file.as_deref(),
+        arguments.update_health_token,
+    ) {
+        acknowledge_startup(health_file, health_token)
+            .context("failed to acknowledge updated collector startup")?;
+    }
+
+    if let Some(helper) = arguments.cleanup_helper {
+        tokio::spawn(cleanup_helper_when_possible(helper));
+    }
+
+    application.run().await
 }
