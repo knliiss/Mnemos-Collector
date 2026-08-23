@@ -148,7 +148,8 @@ impl ApplyUpdateCommand {
 
         if let Err(error) = self.prepare_install_executable(&install_executable) {
             restart_current(&self.current_executable, &helper)?;
-            return Err(error).context("failed to prepare collector update beside the installed binary");
+            return Err(error)
+                .context("failed to prepare collector update beside the installed binary");
         }
 
         if let Err(error) = move_current_to_backup(
@@ -222,7 +223,8 @@ impl ApplyUpdateCommand {
 
         if let Err(error) = fs::copy(&self.staged_executable, install_executable) {
             let _ = remove_if_exists(install_executable);
-            return Err(error).context("failed to copy collector update beside installed executable");
+            return Err(error)
+                .context("failed to copy collector update beside installed executable");
         }
 
         preserve_executable_permissions(&self.staged_executable, install_executable)?;
