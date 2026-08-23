@@ -1,7 +1,9 @@
 pub mod application;
 pub mod cristalix;
 pub mod parser;
+pub mod platform;
 pub mod protocol;
+pub mod provisioning;
 pub mod realtime;
 pub mod security;
 pub mod spool;

@@ -63,7 +63,7 @@ impl ProvisioningClient {
         &self,
         activation_token: &str,
         device_name: &str,
-    ) -> Result<String> {
+    ) -> Result<Uuid> {
         validate_activation_token(activation_token)?;
         validate_device_name(device_name)?;
 
@@ -87,7 +87,8 @@ impl ProvisioningClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            let message = parse_server_error(&body).unwrap_or_else(|| "provisioning request failed".to_owned());
+            let message = parse_server_error(&body)
+                .unwrap_or_else(|| "provisioning request failed".to_owned());
 
             bail!("collector provisioning was rejected with {status}: {message}");
         }
@@ -96,15 +97,19 @@ impl ProvisioningClient {
             .json()
             .await
             .context("Mnemos returned an invalid collector provisioning response")?;
-        let access_key = format!("{}.{}", redeemed.credential_id, secret.as_str());
+        let access_key = Zeroizing::new(format!(
+            "{}.{}",
+            redeemed.credential_id,
+            secret.as_str()
+        ));
 
-        validate_access_key(&access_key)?;
+        validate_access_key(access_key.as_str())?;
         self.credential_store
-            .save(&access_key)
+            .save(access_key.as_str())
             .context("collector credential was issued but could not be saved securely")?;
         self.pending_store.clear()?;
 
-        Ok(access_key)
+        Ok(redeemed.credential_id)
     }
 
     fn load_or_create_secret(&self, activation_hash: &str) -> Result<Zeroizing<String>> {
