@@ -106,18 +106,13 @@ mod tests {
         .unwrap();
         let normalized = path.to_string_lossy().replace('\\', "/");
 
-        assert!(
-            normalized
-                .ends_with("C:/Users/Player/.cristalix/updates/Minigames/logs/latest.log")
-        );
+        assert!(normalized.ends_with("C:/Users/Player/.cristalix/updates/Minigames/logs/latest.log"));
     }
 
     #[test]
     fn extracts_cristalix_root_from_unix_argument() {
-        let path = latest_log_from_argument(
-            "/home/player/.cristalix/updates/Minigames/client.jar",
-        )
-        .unwrap();
+        let path = latest_log_from_argument("/home/player/.cristalix/updates/Minigames/client.jar")
+            .unwrap();
 
         assert_eq!(
             path,
