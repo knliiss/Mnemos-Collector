@@ -163,12 +163,7 @@ pub(super) unsafe fn draw(
         draw_header(hdc, fonts);
         draw_hero(hdc, runtime, layout, fonts);
 
-        mascot::draw(
-            hdc,
-            layout.hero.right - 160,
-            layout.hero.top + 16,
-            122,
-        );
+        mascot::draw(hdc, layout.hero.right - 160, layout.hero.top + 16, 122);
 
         if let Some(activation) = layout.activation {
             draw_activation(hdc, activation, layout, fonts, &state);
@@ -193,12 +188,7 @@ unsafe fn draw_header(hdc: *mut c_void, fonts: Fonts) {
     }
 }
 
-unsafe fn draw_hero(
-    hdc: *mut c_void,
-    runtime: &RuntimeSnapshot,
-    layout: Layout,
-    fonts: Fonts,
-) {
+unsafe fn draw_hero(hdc: *mut c_void, runtime: &RuntimeSnapshot, layout: Layout, fonts: Fonts) {
     let (title, detail, status_color) = status_copy(runtime);
     let rect = layout.hero;
 
@@ -430,12 +420,7 @@ unsafe fn draw_activation(
     }
 }
 
-unsafe fn draw_logs_panel(
-    hdc: *mut c_void,
-    layout: Layout,
-    fonts: Fonts,
-    debug_enabled: bool,
-) {
+unsafe fn draw_logs_panel(hdc: *mut c_void, layout: Layout, fonts: Fonts, debug_enabled: bool) {
     unsafe {
         draw_card(hdc, layout.logs_card, theme::SURFACE, theme::LINE);
         draw_text(
@@ -486,14 +471,7 @@ unsafe fn draw_status_chip(
             font,
             theme::TEXT_MUTED,
         );
-        draw_text(
-            hdc,
-            rect.left + 25,
-            rect.top + 18,
-            value,
-            font,
-            theme::TEXT,
-        );
+        draw_text(hdc, rect.left + 25, rect.top + 18, value, font, theme::TEXT);
     }
 }
 
@@ -545,22 +523,10 @@ unsafe fn draw_primary_button(hdc: *mut c_void, rect: UiRect, label: &str, font:
     }
 }
 
-unsafe fn draw_secondary_button(
-    hdc: *mut c_void,
-    rect: UiRect,
-    label: &str,
-    font: *mut c_void,
-) {
+unsafe fn draw_secondary_button(hdc: *mut c_void, rect: UiRect, label: &str, font: *mut c_void) {
     unsafe {
         draw_card(hdc, rect, theme::SURFACE_RAISED, theme::LINE_STRONG);
-        draw_text(
-            hdc,
-            rect.left + 15,
-            rect.top + 9,
-            label,
-            font,
-            theme::TEXT,
-        );
+        draw_text(hdc, rect.left + 15, rect.top + 9, label, font, theme::TEXT);
     }
 }
 
