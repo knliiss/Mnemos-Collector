@@ -58,7 +58,8 @@ mod tests {
 
     #[test]
     fn validates_server_access_key_format() {
-        let key = "019c1129-ef54-7000-8000-000000000220.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmno12";
+        let key =
+            "019c1129-ef54-7000-8000-000000000220.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmno12";
 
         assert!(validate_access_key(key).is_ok());
     }
@@ -67,10 +68,8 @@ mod tests {
     fn rejects_shared_or_malformed_secrets() {
         assert!(validate_access_key("shared-secret").is_err());
         assert!(
-            validate_access_key(
-                "019c1129-ef54-7000-8000-000000000220.secret-with-invalid-length"
-            )
-            .is_err()
+            validate_access_key("019c1129-ef54-7000-8000-000000000220.secret-with-invalid-length")
+                .is_err()
         );
     }
 }
