@@ -38,6 +38,83 @@ jobs:
       - name: Run tests
         run: cargo test --locked --all-targets --all-features
 
+  release-build:
+    name: release-${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x86_64
+            binary: mnemos-collector
+            installer_package: tar
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+            binary: mnemos-collector.exe
+            installer_package: exe
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            platform: macos-x86_64
+            binary: mnemos-collector
+            installer_package: tar
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: macos-aarch64
+            binary: mnemos-collector
+            installer_package: tar
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install release Rust target
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup target add "${{ matrix.target }}" --toolchain 1.98.0
+
+      - name: Build release collector
+        shell: bash
+        env:
+          MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY: A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=
+        run: |
+          set -euo pipefail
+
+          cargo +1.98.0 build \
+            --locked \
+            --release \
+            --target "${{ matrix.target }}"
+
+          binary="target/${{ matrix.target }}/release/${{ matrix.binary }}"
+
+          if [ ! -f "$binary" ]; then
+            echo "Release collector binary was not produced: $binary"
+            exit 1
+          fi
+
+          if [ "${{ matrix.installer_package }}" = "tar" ]; then
+            mkdir -p installer-smoke/package installer-smoke/extracted
+            cp "$binary" installer-smoke/package/mnemos-collector-installer
+            chmod 755 installer-smoke/package/mnemos-collector-installer
+            tar \
+              -C installer-smoke/package \
+              -czf installer-smoke/installer.tar.gz \
+              mnemos-collector-installer
+            tar \
+              -C installer-smoke/extracted \
+              -xzf installer-smoke/installer.tar.gz
+
+            if [ ! -x installer-smoke/extracted/mnemos-collector-installer ]; then
+              echo "Packaged Unix collector installer lost its executable mode."
+              exit 1
+            fi
+          fi
+
   release-signing-contract:
     name: release-signing-contract
     runs-on: ubuntu-latest
