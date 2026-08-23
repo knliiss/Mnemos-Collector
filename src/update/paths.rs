@@ -18,10 +18,7 @@ pub fn update_directory() -> Result<PathBuf> {
 pub fn helper_path() -> Result<PathBuf> {
     let suffix = if cfg!(windows) { ".exe" } else { "" };
 
-    Ok(update_directory()?.join(format!(
-        "{HELPER_PREFIX}{}{suffix}",
-        Uuid::now_v7()
-    )))
+    Ok(update_directory()?.join(format!("{HELPER_PREFIX}{}{suffix}", Uuid::now_v7())))
 }
 
 pub fn health_file_path() -> Result<PathBuf> {

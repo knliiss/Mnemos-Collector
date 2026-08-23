@@ -158,7 +158,10 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(arguments.update_health_file.as_deref(), Some(health_file.as_path()));
+        assert_eq!(
+            arguments.update_health_file.as_deref(),
+            Some(health_file.as_path())
+        );
         assert_eq!(arguments.update_health_token, Some(health_token));
         assert_eq!(arguments.cleanup_helper.as_deref(), Some(helper.as_path()));
     }

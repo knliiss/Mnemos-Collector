@@ -86,11 +86,7 @@ impl ApplyUpdateCommand {
                     )?;
                 }
                 HEALTH_FILE_ARGUMENT => {
-                    set_once(
-                        &mut health_file,
-                        PathBuf::from(value),
-                        HEALTH_FILE_ARGUMENT,
-                    )?;
+                    set_once(&mut health_file, PathBuf::from(value), HEALTH_FILE_ARGUMENT)?;
                 }
                 HEALTH_TOKEN_ARGUMENT => {
                     let token = Uuid::parse_str(&value)
@@ -120,7 +116,8 @@ impl ApplyUpdateCommand {
     pub fn run(self) -> Result<()> {
         self.validate()?;
 
-        let helper = std::env::current_exe().context("failed to locate collector updater helper")?;
+        let helper =
+            std::env::current_exe().context("failed to locate collector updater helper")?;
         require_safe_helper_path(&helper)?;
 
         remove_if_exists(&self.health_file)?;
@@ -226,8 +223,8 @@ impl UpdateHandoff {
             bail!("staged collector update executable does not exist");
         }
 
-        let current_executable = std::env::current_exe()
-            .context("failed to locate the running collector executable")?;
+        let current_executable =
+            std::env::current_exe().context("failed to locate the running collector executable")?;
         let current_executable = current_executable
             .canonicalize()
             .context("failed to resolve the running collector executable")?;
@@ -360,7 +357,8 @@ fn move_current_to_backup(current: &Path, backup: &Path, timeout: Duration) -> R
         match fs::rename(current, backup) {
             Ok(()) => return Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(error).context("running collector executable disappeared during update");
+                return Err(error)
+                    .context("running collector executable disappeared during update");
             }
             Err(error) => {
                 last_error = Some(error);
@@ -369,9 +367,8 @@ fn move_current_to_backup(current: &Path, backup: &Path, timeout: Duration) -> R
         }
     }
 
-    Err(last_error
-        .unwrap_or_else(|| std::io::Error::other("collector replacement timed out")))
-    .context("timed out waiting to replace the running collector executable")
+    Err(last_error.unwrap_or_else(|| std::io::Error::other("collector replacement timed out")))
+        .context("timed out waiting to replace the running collector executable")
 }
 
 fn restore_backup(current: &Path, backup: &Path) -> Result<()> {
