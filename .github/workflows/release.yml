@@ -1,0 +1,270 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: collector-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Validate release tag and update public key
+        id: release
+        shell: bash
+        env:
+          UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME}"
+
+          if [[ ! "$tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Release tag must use stable vMAJOR.MINOR.PATCH format."
+            exit 1
+          fi
+
+          version="${tag#v}"
+          cargo_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)"
+
+          if [ "$version" != "$cargo_version" ]; then
+            echo "Release tag version $version does not match Cargo.toml version $cargo_version."
+            exit 1
+          fi
+
+          if [ -z "${UPDATE_PUBLIC_KEY:-}" ]; then
+            echo "MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY repository variable is required."
+            exit 1
+          fi
+
+          public_key_bytes="$(printf '%s' "$UPDATE_PUBLIC_KEY" | base64 --decode | wc -c | tr -d ' ')"
+
+          if [ "$public_key_bytes" != "32" ]; then
+            echo "MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY must be base64 for exactly 32 raw Ed25519 public-key bytes."
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x86_64
+            asset: mnemos-collector-linux-x86_64
+            binary: mnemos-collector
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-x86_64
+            asset: mnemos-collector-windows-x86_64.exe
+            binary: mnemos-collector.exe
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            platform: macos-x86_64
+            asset: mnemos-collector-macos-x86_64
+            binary: mnemos-collector
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: macos-aarch64
+            asset: mnemos-collector-macos-aarch64
+            binary: mnemos-collector
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup target add "${{ matrix.target }}" --toolchain 1.98.0
+
+      - name: Build signed-update collector
+        shell: bash
+        env:
+          MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY:-}" ]; then
+            echo "MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY repository variable is required."
+            exit 1
+          fi
+
+          cargo +1.98.0 build \
+            --locked \
+            --release \
+            --target "${{ matrix.target }}"
+
+          mkdir -p dist
+          cp \
+            "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
+            "dist/${{ matrix.asset }}"
+
+      - name: Upload collector artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: collector-${{ matrix.platform }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-latest
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
+      UPDATE_PRIVATE_KEY: ${{ secrets.MNEMOS_COLLECTOR_UPDATE_PRIVATE_KEY_PEM }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download collector artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: collector-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify signing key pair
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${UPDATE_PRIVATE_KEY:-}" ]; then
+            echo "MNEMOS_COLLECTOR_UPDATE_PRIVATE_KEY_PEM Actions secret is required."
+            exit 1
+          fi
+
+          key_file="$RUNNER_TEMP/mnemos-collector-update-key.pem"
+          printf '%s' "$UPDATE_PRIVATE_KEY" > "$key_file"
+          chmod 600 "$key_file"
+
+          derived_public_key="$(
+            openssl pkey -in "$key_file" -pubout -outform DER \
+              | tail -c 32 \
+              | base64 \
+              | tr -d '\r\n'
+          )"
+
+          if [ "$derived_public_key" != "$UPDATE_PUBLIC_KEY" ]; then
+            echo "Collector update private key does not match MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY."
+            exit 1
+          fi
+
+          echo "UPDATE_KEY_FILE=$key_file" >> "$GITHUB_ENV"
+
+      - name: Build signed release manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          manifest="$(jq -n --arg version "$VERSION" '{version:$version,artifacts:{}}')"
+
+          sign_artifact() {
+            platform="$1"
+            asset="$2"
+            asset_path="dist/$asset"
+
+            if [ ! -f "$asset_path" ]; then
+              echo "Missing release artifact: $asset_path"
+              exit 1
+            fi
+
+            sha256="$(sha256sum "$asset_path" | awk '{print $1}')"
+            payload="$RUNNER_TEMP/update-payload-$platform.txt"
+            signature_file="$RUNNER_TEMP/update-signature-$platform.bin"
+
+            printf 'mnemos-collector-update-v1\n%s\n%s\n%s\n' \
+              "$VERSION" \
+              "$platform" \
+              "$sha256" \
+              > "$payload"
+
+            openssl pkeyutl \
+              -sign \
+              -rawin \
+              -inkey "$UPDATE_KEY_FILE" \
+              -in "$payload" \
+              -out "$signature_file"
+
+            signature="$(base64 < "$signature_file" | tr -d '\r\n')"
+            url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$asset"
+
+            manifest="$(
+              jq \
+                --arg platform "$platform" \
+                --arg url "$url" \
+                --arg sha256 "$sha256" \
+                --arg signature "$signature" \
+                '.artifacts[$platform] = {url:$url,sha256:$sha256,signature:$signature}' \
+                <<< "$manifest"
+            )"
+          }
+
+          sign_artifact linux-x86_64 mnemos-collector-linux-x86_64
+          sign_artifact windows-x86_64 mnemos-collector-windows-x86_64.exe
+          sign_artifact macos-x86_64 mnemos-collector-macos-x86_64
+          sign_artifact macos-aarch64 mnemos-collector-macos-aarch64
+
+          printf '%s\n' "$manifest" > dist/manifest.json
+          jq -e \
+            --arg version "$VERSION" \
+            '.version == $version and (.artifacts | length) == 4' \
+            dist/manifest.json \
+            > /dev/null
+
+      - name: Publish GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          assets=(
+            dist/mnemos-collector-linux-x86_64
+            dist/mnemos-collector-windows-x86_64.exe
+            dist/mnemos-collector-macos-x86_64
+            dist/mnemos-collector-macos-aarch64
+            dist/manifest.json
+          )
+
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create \
+              "$GITHUB_REF_NAME" \
+              "${assets[@]}" \
+              --verify-tag \
+              --title "Mnemos Collector $VERSION" \
+              --generate-notes
+          fi
+
+      - name: Remove signing key
+        if: always()
+        shell: bash
+        run: rm -f "${UPDATE_KEY_FILE:-}"
