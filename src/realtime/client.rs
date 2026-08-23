@@ -149,7 +149,8 @@ impl RealtimeClient {
     }
 
     async fn send_json(&mut self, payload: &impl Serialize) -> Result<()> {
-        let json = serde_json::to_string(payload).context("failed to serialize collector message")?;
+        let json =
+            serde_json::to_string(payload).context("failed to serialize collector message")?;
 
         self.socket
             .send(Message::Text(json.into()))
