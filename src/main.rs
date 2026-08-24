@@ -14,10 +14,16 @@ use mnemos_collector::update::{
     ApplyUpdateCommand, acknowledge_startup, cleanup_helper_when_possible,
 };
 
+#[cfg(target_os = "windows")]
+const APPLY_UPDATE_FLAG: &str = "--apply-update";
+
 #[tokio::main]
 async fn main() {
     diagnostics::initialize();
     diagnostics::install_panic_hook();
+
+    #[cfg(target_os = "windows")]
+    let internal_update = is_internal_update_invocation();
 
     if let Err(error) = run().await {
         let message = format!("{error:#}");
@@ -25,10 +31,17 @@ async fn main() {
         diagnostics::error("startup", message.clone());
 
         #[cfg(target_os = "windows")]
-        desktop::show_fatal_error(&message);
+        if !internal_update {
+            desktop::show_fatal_error(&message);
+        }
 
         std::process::exit(1);
     }
+}
+
+#[cfg(target_os = "windows")]
+fn is_internal_update_invocation() -> bool {
+    std::env::args().nth(1).as_deref() == Some(APPLY_UPDATE_FLAG)
 }
 
 async fn run() -> Result<()> {
