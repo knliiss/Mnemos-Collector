@@ -1,3 +1,4 @@
+mod clipboard;
 mod dpi;
 mod mascot;
 mod native_shell;

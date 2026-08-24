@@ -16,7 +16,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetFocus, GetKeyState, SetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
-    VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB,
+    VK_CONTROL, VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB,
 };
 use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
@@ -24,15 +24,14 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow,
     DispatchMessageW, ES_AUTOHSCROLL, ES_PASSWORD, GWLP_USERDATA, GetClientRect, GetMessageW,
-    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT,
-    HTCAPTION, HTCLIENT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, IDC_ARROW, LoadCursorW,
-    MINMAXINFO, MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW,
+    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HTCAPTION, HTCLIENT, IDC_ARROW,
+    LoadCursorW, MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW,
     SIZE_MINIMIZED, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, SendMessageW, SetForegroundWindow,
     SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, WM_APP, WM_CLOSE,
-    WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONUP,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WM_SETFONT,
-    WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
-    WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE,
+    WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_NCCREATE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_SIZE,
+    WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
+    WS_TABSTOP, WS_VISIBLE,
 };
 use zeroize::Zeroizing;
 
@@ -43,6 +42,7 @@ use crate::provisioning::{ProvisioningClient, default_device_name};
 use crate::security::CredentialStore;
 
 use super::DesktopLaunchContext;
+use super::clipboard::{self, LogCopyFormat};
 use super::mascot;
 use super::theme;
 use super::tray_popup;
@@ -50,6 +50,8 @@ use super::view::{self, Fonts, InteractiveElement, Layout, ViewState};
 
 const CLASS_NAME: &str = "MnemosCollectorShell";
 const WINDOW_TITLE: &str = "Mnemos Collector";
+const WINDOW_WIDTH: i32 = 1080;
+const WINDOW_HEIGHT: i32 = 720;
 const TIMER_REFRESH: usize = 1;
 const REFRESH_INTERVAL_MS: u32 = 750;
 const WM_SETICON_MESSAGE: u32 = 0x0080;
@@ -59,11 +61,7 @@ const WM_TRAY: u32 = WM_APP + 1;
 const WM_ACTIVATION_RESULT: u32 = WM_APP + 2;
 const WM_COLLECTOR_STOPPED: u32 = WM_APP + 3;
 const TRAY_ID: u32 = 1;
-const RESIZE_BORDER: i32 = 7;
 const ACTIVATION_FIELD_OFFSET_Y: i32 = 4;
-const MIN_WINDOW_WIDTH: i32 = 760;
-const MIN_PROVISIONED_WINDOW_HEIGHT: i32 = 460;
-const MIN_ACTIVATION_WINDOW_HEIGHT: i32 = 610;
 const DWM_WINDOW_CORNER_PREFERENCE_ATTRIBUTE: u32 = 33;
 const DWM_WINDOW_CORNER_PREFERENCE_ROUND: u32 = 2;
 
@@ -109,16 +107,11 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
             0,
             class_name.as_ptr(),
             title.as_ptr(),
-            WS_POPUP
-                | WS_THICKFRAME
-                | WS_SYSMENU
-                | WS_MINIMIZEBOX
-                | WS_MAXIMIZEBOX
-                | WS_CLIPCHILDREN,
+            WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            820,
-            610,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
             null_mut(),
             null_mut(),
             instance,
@@ -173,6 +166,11 @@ pub fn show_fatal_error(message: &str) {
     }
 }
 
+struct SelectedLogEntry {
+    index: usize,
+    text: String,
+}
+
 struct DesktopWindow {
     runtime: Handle,
     current_installation: bool,
@@ -194,6 +192,7 @@ struct DesktopWindow {
     tracking_mouse_leave: bool,
     last_log_text: String,
     log_scroll_from_bottom: usize,
+    selected_log_entry: Option<SelectedLogEntry>,
     last_runtime: RuntimeSnapshot,
 }
 
@@ -220,6 +219,7 @@ impl DesktopWindow {
             tracking_mouse_leave: false,
             last_log_text: String::new(),
             log_scroll_from_bottom: 0,
+            selected_log_entry: None,
             last_runtime: diagnostics::runtime_snapshot(),
         }
     }
@@ -311,12 +311,26 @@ impl DesktopWindow {
     }
 
     fn handle_keyboard(&mut self, hwnd: HWND, message: &MSG) -> bool {
-        if self.provisioned || message.message != WM_KEYDOWN {
+        if message.message != WM_KEYDOWN {
             return false;
         }
 
         let key = message.wParam as u16;
         let focus = unsafe { GetFocus() };
+        let control_pressed = unsafe { GetKeyState(VK_CONTROL as i32) } < 0;
+
+        if key == b'C' as u16
+            && control_pressed
+            && focus == hwnd
+            && self.selected_log_entry.is_some()
+        {
+            self.copy_selected_log(hwnd);
+            return true;
+        }
+
+        if self.provisioned {
+            return false;
+        }
 
         if key == VK_TAB {
             if self.provisioning {
@@ -550,6 +564,15 @@ impl DesktopWindow {
 
         self.last_log_text = text;
 
+        if let Some(selected) = self.selected_log_entry.as_ref() {
+            let still_selected = view::log_entry_text(&self.last_log_text, selected.index)
+                .is_some_and(|text| text == selected.text);
+
+            if !still_selected {
+                self.selected_log_entry = None;
+            }
+        }
+
         let layout = window_layout(hwnd, self.provisioned);
         let limit = view::log_scroll_limit(&self.last_log_text, layout.logs_view);
         self.log_scroll_from_bottom = self.log_scroll_from_bottom.min(limit);
@@ -574,6 +597,59 @@ impl DesktopWindow {
         }
 
         self.invalidate(hwnd);
+    }
+
+    fn select_log_entry(&mut self, hwnd: HWND, layout: Layout, x: i32, y: i32) {
+        self.activation_button_focused = false;
+        self.selected_log_entry = view::log_entry_at(
+            &self.last_log_text,
+            layout.logs_view,
+            self.log_scroll_from_bottom,
+            x,
+            y,
+        )
+        .and_then(|index| {
+            view::log_entry_text(&self.last_log_text, index).map(|text| SelectedLogEntry {
+                index,
+                text: text.to_owned(),
+            })
+        });
+
+        unsafe {
+            SetFocus(hwnd);
+        }
+
+        self.invalidate(hwnd);
+    }
+
+    fn copy_selected_log(&self, hwnd: HWND) {
+        let Some(selected) = self.selected_log_entry.as_ref() else {
+            return;
+        };
+
+        match clipboard::copy_text(hwnd, &selected.text) {
+            Ok(()) => diagnostics::info("desktop", "Selected log entry copied to clipboard"),
+            Err(error) => diagnostics::error(
+                "desktop",
+                format!("Failed to copy selected log entry: {error:#}"),
+            ),
+        }
+    }
+
+    fn copy_all_logs(&self, hwnd: HWND) {
+        match clipboard::copy_log(hwnd, &self.last_log_text) {
+            Ok(LogCopyFormat::File) => {
+                diagnostics::info("desktop", "Journal copied to clipboard as a .txt file")
+            }
+            Ok(LogCopyFormat::Text) => diagnostics::info(
+                "desktop",
+                "Journal copied to clipboard as text because file copy was unavailable",
+            ),
+            Err(error) => diagnostics::error(
+                "desktop",
+                format!("Failed to copy journal to clipboard: {error:#}"),
+            ),
+        }
     }
 
     fn mouse_move(&mut self, hwnd: HWND, x: i32, y: i32) {
@@ -644,6 +720,7 @@ impl DesktopWindow {
             hovered: self.hovered,
             log_text: &self.last_log_text,
             log_scroll_from_bottom: self.log_scroll_from_bottom,
+            selected_log_entry: self.selected_log_entry.as_ref().map(|entry| entry.index),
         };
 
         unsafe {
@@ -655,6 +732,11 @@ impl DesktopWindow {
     fn click(&mut self, hwnd: HWND, x: i32, y: i32) {
         let layout = window_layout(hwnd, self.provisioned);
 
+        if layout.logs_view.contains(x, y) {
+            self.select_log_entry(hwnd, layout, x, y);
+            return;
+        }
+
         match view::interactive_element_at(layout, self.provisioned, x, y) {
             Some(InteractiveElement::WindowClose) => unsafe {
                 ShowWindow(hwnd, SW_HIDE);
@@ -662,6 +744,9 @@ impl DesktopWindow {
             Some(InteractiveElement::WindowMinimize) => unsafe {
                 ShowWindow(hwnd, SW_MINIMIZE);
             },
+            Some(InteractiveElement::CopyLogs) => {
+                self.copy_all_logs(hwnd);
+            }
             Some(InteractiveElement::DebugToggle) => {
                 diagnostics::set_debug_enabled(!diagnostics::debug_enabled());
                 self.invalidate(hwnd);
@@ -751,16 +836,6 @@ unsafe extern "system" fn window_proc(
                 ScreenToClient(hwnd, &mut point);
                 return hit_test_window(hwnd, (*state).provisioned, point);
             }
-        }
-        WM_GETMINMAXINFO => {
-            if lparam != 0 {
-                let limits = unsafe { &mut *(lparam as *mut MINMAXINFO) };
-                let provisioned = !state.is_null() && unsafe { (*state).provisioned };
-
-                limits.ptMinTrackSize.x = MIN_WINDOW_WIDTH;
-                limits.ptMinTrackSize.y = minimum_window_height(provisioned);
-            }
-            return 0;
         }
         WM_SIZE => {
             if wparam as u32 == SIZE_MINIMIZED {
@@ -897,36 +972,6 @@ fn hit_test_window(hwnd: HWND, provisioned: bool, point: POINT) -> LRESULT {
 
     let width = client.right - client.left;
     let height = client.bottom - client.top;
-    let left = point.x < RESIZE_BORDER;
-    let right = point.x >= width - RESIZE_BORDER;
-    let top = point.y < RESIZE_BORDER;
-    let bottom = point.y >= height - RESIZE_BORDER;
-
-    if top && left {
-        return HTTOPLEFT as isize;
-    }
-    if top && right {
-        return HTTOPRIGHT as isize;
-    }
-    if bottom && left {
-        return HTBOTTOMLEFT as isize;
-    }
-    if bottom && right {
-        return HTBOTTOMRIGHT as isize;
-    }
-    if left {
-        return HTLEFT as isize;
-    }
-    if right {
-        return HTRIGHT as isize;
-    }
-    if top {
-        return HTTOP as isize;
-    }
-    if bottom {
-        return HTBOTTOM as isize;
-    }
-
     let layout = view::layout(width, height, provisioned);
 
     if layout.window_minimize.contains(point.x, point.y)
@@ -940,14 +985,6 @@ fn hit_test_window(hwnd: HWND, provisioned: bool, point: POINT) -> LRESULT {
     }
 
     HTCLIENT as isize
-}
-
-fn minimum_window_height(provisioned: bool) -> i32 {
-    if provisioned {
-        MIN_PROVISIONED_WINDOW_HEIGHT
-    } else {
-        MIN_ACTIVATION_WINDOW_HEIGHT
-    }
 }
 
 async fn provision_current_installation(token: &str, device_name: &str) -> Result<Option<String>> {
@@ -1159,11 +1196,17 @@ fn high_word(value: usize) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ACTIVATION_FIELD_OFFSET_Y, adjusted_layout, view};
+    use super::{ACTIVATION_FIELD_OFFSET_Y, WINDOW_HEIGHT, WINDOW_WIDTH, adjusted_layout, view};
+
+    #[test]
+    fn desktop_window_uses_fixed_compact_dimensions() {
+        assert_eq!(WINDOW_WIDTH, 1080);
+        assert_eq!(WINDOW_HEIGHT, 720);
+    }
 
     #[test]
     fn activation_controls_leave_more_space_below_labels() {
-        let base = view::layout(760, 610, false);
+        let base = view::layout(WINDOW_WIDTH, WINDOW_HEIGHT, false);
         let adjusted = adjusted_layout(base, false);
 
         assert_eq!(

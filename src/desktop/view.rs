@@ -18,6 +18,8 @@ const CONTENT_MARGIN: i32 = 22;
 const HEADER_HEIGHT: i32 = 68;
 const CARD_RADIUS: i32 = 24;
 const DEBUG_TOGGLE_WIDTH: i32 = 154;
+const COPY_LOGS_WIDTH: i32 = 156;
+const LOG_ACTION_GAP: i32 = 10;
 const STATUS_TILE_HEIGHT: i32 = 46;
 const STATUS_TILE_BOTTOM_MARGIN: i32 = 12;
 const STATUS_LABEL_TOP_PADDING: i32 = 3;
@@ -69,6 +71,7 @@ pub(super) struct Layout {
     pub activate_button: UiRect,
     pub logs_card: UiRect,
     pub logs_view: UiRect,
+    pub copy_logs: UiRect,
     pub debug_toggle: UiRect,
 }
 
@@ -84,6 +87,7 @@ pub(super) struct Fonts {
 pub(super) enum InteractiveElement {
     WindowMinimize,
     WindowClose,
+    CopyLogs,
     DebugToggle,
     ActivateButton,
 }
@@ -96,11 +100,13 @@ pub(super) struct ViewState<'a> {
     pub hovered: Option<InteractiveElement>,
     pub log_text: &'a str,
     pub log_scroll_from_bottom: usize,
+    pub selected_log_entry: Option<usize>,
 }
 
 struct LogVisualLine {
     text: String,
     color: u32,
+    entry_index: usize,
 }
 
 pub(super) fn layout(width: i32, height: i32, provisioned: bool) -> Layout {
@@ -194,6 +200,12 @@ pub(super) fn layout(width: i32, height: i32, provisioned: bool) -> Layout {
         right: logs_card.right - 14,
         bottom: logs_card.top + 43,
     };
+    let copy_logs = UiRect {
+        left: debug_toggle.left - LOG_ACTION_GAP - COPY_LOGS_WIDTH,
+        top: debug_toggle.top,
+        right: debug_toggle.left - LOG_ACTION_GAP,
+        bottom: debug_toggle.bottom,
+    };
     let logs_view = UiRect {
         left: logs_card.left + 14,
         top: logs_card.top + 52,
@@ -214,6 +226,7 @@ pub(super) fn layout(width: i32, height: i32, provisioned: bool) -> Layout {
         activate_button,
         logs_card,
         logs_view,
+        copy_logs,
         debug_toggle,
     }
 }
@@ -232,6 +245,10 @@ pub(super) fn interactive_element_at(
         return Some(InteractiveElement::WindowMinimize);
     }
 
+    if layout.copy_logs.contains(x, y) {
+        return Some(InteractiveElement::CopyLogs);
+    }
+
     if layout.debug_toggle.contains(x, y) {
         return Some(InteractiveElement::DebugToggle);
     }
@@ -244,11 +261,50 @@ pub(super) fn interactive_element_at(
 }
 
 pub(super) fn log_scroll_limit(text: &str, rect: UiRect) -> usize {
-    let max_chars = log_chars_per_line(rect);
+    let text_rect = log_text_rect(rect);
+    let max_chars = log_chars_per_line(text_rect);
     let total_lines = wrapped_log_line_count(text, max_chars);
-    let visible_lines = log_visible_line_count(rect);
+    let visible_lines = log_visible_line_count(text_rect);
 
     total_lines.saturating_sub(visible_lines)
+}
+
+pub(super) fn log_entry_at(
+    text: &str,
+    rect: UiRect,
+    scroll_from_bottom: usize,
+    x: i32,
+    y: i32,
+) -> Option<usize> {
+    if !rect.contains(x, y) {
+        return None;
+    }
+
+    let text_rect = log_text_rect(rect);
+
+    if !text_rect.contains(x, y) {
+        return None;
+    }
+
+    let max_chars = log_chars_per_line(text_rect);
+    let lines = wrapped_log_lines(text, max_chars);
+    let visible_count = log_visible_line_count(text_rect);
+    let total = lines.len();
+    let clamped_scroll = scroll_from_bottom.min(total.saturating_sub(visible_count));
+    let end = total.saturating_sub(clamped_scroll);
+    let start = end.saturating_sub(visible_count);
+    let row = ((y - text_rect.top) / LOG_LINE_HEIGHT) as usize;
+    let visual_index = start + row;
+
+    if visual_index >= end {
+        return None;
+    }
+
+    lines.get(visual_index).map(|line| line.entry_index)
+}
+
+pub(super) fn log_entry_text(text: &str, entry_index: usize) -> Option<&str> {
+    text.lines().nth(entry_index)
 }
 
 pub(super) unsafe fn draw(
@@ -657,12 +713,20 @@ unsafe fn draw_logs_panel(hdc: *mut c_void, layout: Layout, fonts: Fonts, state:
             UiRect {
                 left: layout.logs_card.left + 16,
                 top: layout.logs_card.top + 13,
-                right: layout.debug_toggle.left - 12,
+                right: layout.copy_logs.left - 12,
                 bottom: layout.logs_card.top + 42,
             },
             "Журнал",
             fonts.section,
             theme::TEXT,
+        );
+
+        draw_secondary_button(
+            hdc,
+            layout.copy_logs,
+            "Копировать всё",
+            state.hovered == Some(InteractiveElement::CopyLogs),
+            fonts.ui,
         );
 
         draw_toggle(
@@ -679,6 +743,7 @@ unsafe fn draw_logs_panel(hdc: *mut c_void, layout: Layout, fonts: Fonts, state:
             layout.logs_view,
             state.log_text,
             state.log_scroll_from_bottom,
+            state.selected_log_entry,
             fonts.mono,
         );
     }
@@ -689,18 +754,14 @@ unsafe fn draw_log_view(
     rect: UiRect,
     text: &str,
     scroll_from_bottom: usize,
+    selected_entry: Option<usize>,
     font: *mut c_void,
 ) {
     unsafe {
         draw_card_with_radius(hdc, rect, theme::LOG_SURFACE, theme::LINE, 18);
     }
 
-    let text_rect = UiRect {
-        left: rect.left + 12,
-        top: rect.top + 10,
-        right: rect.right - 22,
-        bottom: rect.bottom - 10,
-    };
+    let text_rect = log_text_rect(rect);
     let max_chars = log_chars_per_line(text_rect);
     let lines = wrapped_log_lines(text, max_chars);
     let visible_count = log_visible_line_count(text_rect);
@@ -711,25 +772,37 @@ unsafe fn draw_log_view(
     let mut y = text_rect.top;
 
     for line in &lines[start..end] {
-        unsafe {
-            draw_text_clipped(
-                hdc,
-                UiRect {
-                    left: text_rect.left,
-                    top: y,
-                    right: text_rect.right,
-                    bottom: y + LOG_LINE_HEIGHT,
-                },
-                &line.text,
-                font,
-                line.color,
-            );
+        let line_rect = UiRect {
+            left: text_rect.left,
+            top: y,
+            right: text_rect.right,
+            bottom: y + LOG_LINE_HEIGHT,
+        };
+
+        if selected_entry == Some(line.entry_index) {
+            unsafe {
+                fill_rect(hdc, line_rect, theme::ACCENT_DIM);
+            }
         }
+
+        unsafe {
+            draw_text_clipped(hdc, line_rect, &line.text, font, line.color);
+        }
+
         y += LOG_LINE_HEIGHT;
     }
 
     unsafe {
         draw_log_scrollbar(hdc, rect, total, visible_count, start);
+    }
+}
+
+fn log_text_rect(rect: UiRect) -> UiRect {
+    UiRect {
+        left: rect.left + 12,
+        top: rect.top + 10,
+        right: rect.right - 22,
+        bottom: rect.bottom - 10,
     }
 }
 
@@ -774,7 +847,7 @@ unsafe fn draw_log_scrollbar(
 fn wrapped_log_lines(text: &str, max_chars: usize) -> Vec<LogVisualLine> {
     let mut output = Vec::new();
 
-    for logical_line in text.lines() {
+    for (entry_index, logical_line) in text.lines().enumerate() {
         let color = log_line_color(logical_line);
         let chars = logical_line.chars().collect::<Vec<_>>();
 
@@ -782,6 +855,7 @@ fn wrapped_log_lines(text: &str, max_chars: usize) -> Vec<LogVisualLine> {
             output.push(LogVisualLine {
                 text: String::new(),
                 color,
+                entry_index,
             });
             continue;
         }
@@ -790,6 +864,7 @@ fn wrapped_log_lines(text: &str, max_chars: usize) -> Vec<LogVisualLine> {
             output.push(LogVisualLine {
                 text: chunk.iter().collect(),
                 color,
+                entry_index,
             });
         }
     }
@@ -875,6 +950,40 @@ unsafe fn draw_toggle(
             label,
             font,
             if enabled || hovered {
+                theme::TEXT
+            } else {
+                theme::TEXT_SECONDARY
+            },
+        );
+    }
+}
+
+unsafe fn draw_secondary_button(
+    hdc: *mut c_void,
+    rect: UiRect,
+    label: &str,
+    hovered: bool,
+    font: *mut c_void,
+) {
+    let fill = if hovered {
+        theme::SURFACE_RAISED
+    } else {
+        theme::SURFACE
+    };
+    let border = if hovered {
+        theme::LINE_STRONG
+    } else {
+        theme::LINE
+    };
+
+    unsafe {
+        draw_pill(hdc, rect, fill, border);
+        draw_text_centered(
+            hdc,
+            rect.inset(10, 2),
+            label,
+            font,
+            if hovered {
                 theme::TEXT
             } else {
                 theme::TEXT_SECONDARY
@@ -1008,6 +1117,21 @@ unsafe fn draw_card_with_radius(
     }
 }
 
+unsafe fn fill_rect(hdc: *mut c_void, rect: UiRect, color: u32) {
+    let brush = unsafe { CreateSolidBrush(color) };
+    let native = RECT {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+    };
+
+    unsafe {
+        FillRect(hdc, &native, brush);
+        DeleteObject(brush);
+    }
+}
+
 unsafe fn draw_text_clipped(
     hdc: *mut c_void,
     rect: UiRect,
@@ -1137,7 +1261,10 @@ pub(super) unsafe fn fill_background(hdc: *mut c_void, client: &RECT) {
 
 #[cfg(test)]
 mod tests {
-    use super::{DEBUG_TOGGLE_WIDTH, STATUS_TILE_HEIGHT, UiRect, layout, status_tile_text_rects};
+    use super::{
+        DEBUG_TOGGLE_WIDTH, STATUS_TILE_HEIGHT, UiRect, layout, log_entry_at, log_entry_text,
+        status_tile_text_rects,
+    };
 
     #[test]
     fn activation_layout_keeps_controls_separated_at_minimum_size() {
@@ -1180,11 +1307,13 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_toggle_keeps_full_label_space() {
-        let layout = layout(760, 460, true);
+    fn journal_header_actions_do_not_overlap() {
+        let layout = layout(1080, 720, true);
 
         assert_eq!(layout.debug_toggle.width(), DEBUG_TOGGLE_WIDTH);
         assert_eq!(layout.debug_toggle.height(), 30);
+        assert!(layout.copy_logs.right < layout.debug_toggle.left);
+        assert!(layout.copy_logs.left > layout.logs_card.left + 120);
     }
 
     #[test]
@@ -1202,5 +1331,20 @@ mod tests {
         assert_eq!(value.height(), 21);
         assert_eq!(label.bottom, value.top);
         assert!(value.bottom < tile.bottom);
+    }
+
+    #[test]
+    fn wrapped_log_fragment_resolves_to_original_entry() {
+        let layout = layout(1080, 720, true);
+        let expected = "x".repeat(240);
+        let text = format!("{expected}\nsecond");
+        let x = layout.logs_view.left + 20;
+        let y = layout.logs_view.top + 10 + 18;
+
+        let entry = log_entry_at(&text, layout.logs_view, 0, x, y)
+            .expect("wrapped visual row should resolve to a log entry");
+
+        assert_eq!(entry, 0);
+        assert_eq!(log_entry_text(&text, entry), Some(expected.as_str()));
     }
 }
