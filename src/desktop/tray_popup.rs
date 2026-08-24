@@ -6,8 +6,9 @@ use anyhow::{Context, Result};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreatePen, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
-    InvalidateRect, PAINTSTRUCT, RoundRect, SelectObject, SetBkMode, SetTextColor, SetWindowRgn,
-    TextOutW, UpdateWindow,
+    GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+    PAINTSTRUCT, RoundRect, SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TextOutW,
+    UpdateWindow,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
@@ -15,8 +16,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowW, GWLP_USERDATA,
     GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, RegisterClassW,
     SM_CXSCREEN, SM_CYSCREEN, SW_RESTORE, SW_SHOWNOACTIVATE, SetCursor, SetForegroundWindow,
-    SetWindowLongPtrW, ShowWindow, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCCREATE,
-    WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSW, WS_EX_NOACTIVATE,
+    SetWindowLongPtrW, ShowWindow, WM_CANCELMODE, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEMOVE,
+    WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSW, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
@@ -31,6 +32,8 @@ const ITEM_HEIGHT: i32 = 29;
 const ITEM_GAP: i32 = 4;
 const POPUP_RADIUS: i32 = 24;
 const ITEM_RADIUS: i32 = 17;
+const SCREEN_EDGE_MARGIN: i32 = 8;
+const CURSOR_GAP: i32 = 6;
 
 struct TrayPopupState {
     owner: HWND,
@@ -80,10 +83,8 @@ pub(super) fn show(owner: HWND, font: *mut c_void) -> Result<()> {
         let mut cursor_position = POINT { x: 0, y: 0 };
         GetCursorPos(&mut cursor_position);
 
-        let screen_width = GetSystemMetrics(SM_CXSCREEN);
-        let screen_height = GetSystemMetrics(SM_CYSCREEN);
-        let x = (cursor_position.x - WIDTH).clamp(8, (screen_width - WIDTH - 8).max(8));
-        let y = (cursor_position.y - HEIGHT).clamp(8, (screen_height - HEIGHT - 8).max(8));
+        let work_area = monitor_work_area(cursor_position);
+        let popup_position = popup_position(cursor_position, work_area);
 
         let state = Box::new(TrayPopupState {
             owner,
@@ -97,8 +98,8 @@ pub(super) fn show(owner: HWND, font: *mut c_void) -> Result<()> {
             class_name.as_ptr(),
             null(),
             WS_POPUP,
-            x,
-            y,
+            popup_position.x,
+            popup_position.y,
             WIDTH,
             HEIGHT,
             null_mut(),
@@ -204,7 +205,7 @@ unsafe extern "system" fn window_proc(
 
             return 0;
         }
-        WM_RBUTTONDOWN => {
+        WM_RBUTTONDOWN | WM_CANCELMODE => {
             unsafe {
                 ReleaseCapture();
                 DestroyWindow(hwnd);
@@ -341,6 +342,40 @@ unsafe fn draw_text(hdc: *mut c_void, x: i32, y: i32, text: &str, color: u32) {
     }
 }
 
+fn monitor_work_area(cursor: POINT) -> RECT {
+    unsafe {
+        let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+
+        if !monitor.is_null() {
+            let mut info: MONITORINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+
+            if GetMonitorInfoW(monitor, &mut info) != 0 {
+                return info.rcWork;
+            }
+        }
+
+        RECT {
+            left: 0,
+            top: 0,
+            right: GetSystemMetrics(SM_CXSCREEN),
+            bottom: GetSystemMetrics(SM_CYSCREEN),
+        }
+    }
+}
+
+fn popup_position(cursor: POINT, work_area: RECT) -> POINT {
+    let min_x = work_area.left + SCREEN_EDGE_MARGIN;
+    let max_x = (work_area.right - WIDTH - SCREEN_EDGE_MARGIN).max(min_x);
+    let min_y = work_area.top + SCREEN_EDGE_MARGIN;
+    let max_y = (work_area.bottom - HEIGHT - SCREEN_EDGE_MARGIN).max(min_y);
+
+    POINT {
+        x: (cursor.x - WIDTH).clamp(min_x, max_x),
+        y: (cursor.y - HEIGHT - CURSOR_GAP).clamp(min_y, max_y),
+    }
+}
+
 fn hit_test(x: i32, y: i32) -> Option<TrayItem> {
     if contains(open_rect(), x, y) {
         return Some(TrayItem::Open);
@@ -385,4 +420,61 @@ fn low_word(value: usize) -> u16 {
 
 fn high_word(value: usize) -> u16 {
     ((value >> 16) & 0xffff) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use windows_sys::Win32::Foundation::{POINT, RECT};
+
+    use super::{CURSOR_GAP, HEIGHT, SCREEN_EDGE_MARGIN, WIDTH, popup_position};
+
+    #[test]
+    fn popup_uses_the_monitor_work_area_for_negative_coordinates() {
+        let work_area = RECT {
+            left: -1920,
+            top: 0,
+            right: 0,
+            bottom: 1040,
+        };
+        let cursor = POINT { x: -40, y: 1000 };
+
+        let position = popup_position(cursor, work_area);
+
+        assert_eq!(position.x, -184);
+        assert_eq!(position.y, 920);
+    }
+
+    #[test]
+    fn popup_is_clamped_inside_monitor_work_area() {
+        let work_area = RECT {
+            left: 100,
+            top: 50,
+            right: 900,
+            bottom: 650,
+        };
+        let cursor = POINT { x: 105, y: 55 };
+
+        let position = popup_position(cursor, work_area);
+
+        assert_eq!(position.x, work_area.left + SCREEN_EDGE_MARGIN);
+        assert_eq!(position.y, work_area.top + SCREEN_EDGE_MARGIN);
+        assert!(position.x + WIDTH <= work_area.right - SCREEN_EDGE_MARGIN);
+        assert!(position.y + HEIGHT <= work_area.bottom - SCREEN_EDGE_MARGIN);
+    }
+
+    #[test]
+    fn popup_keeps_a_gap_above_the_cursor_when_space_allows() {
+        let work_area = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1040,
+        };
+        let cursor = POINT { x: 1000, y: 800 };
+
+        let position = popup_position(cursor, work_area);
+
+        assert_eq!(position.x, cursor.x - WIDTH);
+        assert_eq!(position.y + HEIGHT + CURSOR_GAP, cursor.y);
+    }
 }
