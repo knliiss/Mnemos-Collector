@@ -73,29 +73,43 @@ impl LogParser {
             return Vec::new();
         };
 
-        if let Some(location) = parse_raid_location(payload) {
-            if let Some(locations) = self.pending_raid.as_mut() {
-                locations.insert(location);
-            }
-
-            return Vec::new();
-        }
-
-        let mut events = self.flush_pending_raid();
-
         if is_raid_open(payload) {
+            let mut events = self.flush_pending_raid();
+
             if self.mode.accepts_events() {
                 self.mode = GameMode::MasterSword;
-                self.pending_raid = Some(BTreeSet::new());
+
+                let locations = parse_raid_locations(payload);
+
+                if locations.is_empty() {
+                    self.pending_raid = Some(BTreeSet::new());
+                } else {
+                    events.push(CollectorEvent::Raid {
+                        locations: locations.into_iter().collect(),
+                    });
+                }
             }
 
             return events;
         }
 
         if is_raid_close(payload) {
+            let events = self.flush_pending_raid();
             self.pending_raid = None;
+
             return events;
         }
+
+        let raid_locations = parse_raid_locations(payload);
+
+        if !raid_locations.is_empty() {
+            if let Some(locations) = self.pending_raid.as_mut() {
+                locations.extend(raid_locations);
+                return Vec::new();
+            }
+        }
+
+        let mut events = self.flush_pending_raid();
 
         if !self.mode.accepts_events() {
             return events;
@@ -167,7 +181,7 @@ fn extract_chat_payload(line: &str) -> Option<&str> {
 fn is_master_sword_activity(payload: &str) -> bool {
     is_raid_open(payload)
         || is_raid_close(payload)
-        || parse_raid_location(payload).is_some()
+        || !parse_raid_locations(payload).is_empty()
         || parse_drop(payload).is_some()
         || parse_booster(payload).is_some()
         || parse_global(payload).is_some()
@@ -216,13 +230,11 @@ fn parse_booster(payload: &str) -> Option<CollectorEvent> {
 }
 
 fn parse_global(payload: &str) -> Option<CollectorEvent> {
-    let event_type = if payload.contains("Тьма наступает с заходом солнца")
-    {
+    let event_type = if payload.contains("Тьма наступает с заходом солнца") {
         GlobalEventType::Darkness
     } else if payload.contains("кровавая луна") {
         GlobalEventType::Moon
-    } else if payload.contains("Небо темнеет и окутывается глубокой тенью")
-    {
+    } else if payload.contains("Небо темнеет и окутывается глубокой тенью") {
         GlobalEventType::Eclipse
     } else if payload.contains("тепло солнца касается вашей кожи") {
         GlobalEventType::Explosion
@@ -241,13 +253,12 @@ fn is_raid_close(payload: &str) -> bool {
     payload.contains("[Рейд]") && payload.contains("Закрылись врата")
 }
 
-fn parse_raid_location(payload: &str) -> Option<u16> {
+fn parse_raid_locations(payload: &str) -> BTreeSet<u16> {
     RAID_LOCATION
-        .captures(payload)?
-        .name("location")?
-        .as_str()
-        .parse()
-        .ok()
+        .captures_iter(payload)
+        .filter_map(|captures| captures.name("location"))
+        .filter_map(|location| location.as_str().parse().ok())
+        .collect()
 }
 
 fn parse_rarity(raw: &str) -> Option<ItemRarity> {
