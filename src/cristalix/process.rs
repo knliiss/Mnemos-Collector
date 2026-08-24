@@ -41,19 +41,17 @@ impl CristalixProcessDetector {
 
         for (pid, process) in self.system.processes() {
             let name = process.name().to_string_lossy().to_ascii_lowercase();
-
-            if !is_java_process_name(&name) {
-                continue;
-            }
-
-            java_processes += 1;
-
+            let java_process = is_java_process_name(&name);
             let locations = process_locations(process);
             let direct_match = locations
                 .iter()
                 .any(|location| references_cristalix_game(location));
-            let ancestry_match =
-                descends_from_cristalix_launcher(*pid, &self.system, &launcher_pids);
+            let ancestry_match = java_process
+                && descends_from_cristalix_launcher(*pid, &self.system, &launcher_pids);
+
+            if java_process {
+                java_processes += 1;
+            }
 
             if direct_match {
                 direct_matches += 1;
@@ -152,10 +150,7 @@ fn process_locations(process: &Process) -> Vec<String> {
 fn references_cristalix_game(value: &str) -> bool {
     let normalized = value.replace('\\', "/").to_ascii_lowercase();
 
-    normalized.contains("/.cristalix/")
-        && (normalized.contains("/updates/minigames/")
-            || normalized.contains("/updates/minigames")
-            || normalized.contains("minigames"))
+    normalized.contains("/.cristalix/") && normalized.contains("minigames")
 }
 
 fn collect_log_candidates(locations: &[String], candidates: &mut BTreeSet<PathBuf>) {
@@ -235,6 +230,13 @@ mod tests {
     fn recognizes_minigames_locations_case_insensitively() {
         assert!(references_cristalix_game(
             r#"C:\Users\Player\.cristalix\updates\MiniGames\runtime\bin\javaw.exe"#
+        ));
+    }
+
+    #[test]
+    fn recognizes_native_minigames_wrapper_as_direct_evidence() {
+        assert!(references_cristalix_game(
+            r#"C:\Users\Player\.cristalix\updates\Minigames\runtime\CristalixClient.exe"#
         ));
     }
 
