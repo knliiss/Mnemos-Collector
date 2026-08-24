@@ -6,17 +6,18 @@ use anyhow::{Context, Result};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreatePen, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
-    InvalidateRect, PAINTSTRUCT, RoundRect, SelectObject, SetBkMode, SetTextColor, TextOutW,
-    UpdateWindow,
+    InvalidateRect, PAINTSTRUCT, RoundRect, SelectObject, SetBkMode, SetTextColor, SetWindowRgn,
+    TextOutW, UpdateWindow,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowW, GWLP_USERDATA,
     GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, RegisterClassW,
-    ReleaseCapture, SM_CXSCREEN, SM_CYSCREEN, SW_RESTORE, SW_SHOWNOACTIVATE, SetCapture,
-    SetForegroundWindow, SetWindowLongPtrW, SetWindowRgn, ShowWindow, WM_ERASEBKGND,
-    WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WNDCLASSW,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    SM_CXSCREEN, SM_CYSCREEN, SW_RESTORE, SW_SHOWNOACTIVATE, SetForegroundWindow,
+    SetWindowLongPtrW, ShowWindow, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCCREATE,
+    WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 
 use super::mascot;
