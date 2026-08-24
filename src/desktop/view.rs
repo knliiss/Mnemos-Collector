@@ -64,28 +64,28 @@ pub(super) fn layout(width: i32, height: i32, provisioned: bool) -> Layout {
     let margin = 28;
     let hero = UiRect {
         left: margin,
-        top: 94,
+        top: 110,
         right: (width - margin).max(margin + 720),
-        bottom: 276,
+        bottom: 292,
     };
     let tray_button = UiRect {
-        left: hero.right - 364,
+        left: hero.right - 382,
         top: hero.top + 22,
         right: hero.right - 176,
         bottom: hero.top + 60,
     };
 
     let (activation, logs_top) = if provisioned {
-        (None, 306)
+        (None, 322)
     } else {
         (
             Some(UiRect {
                 left: margin,
-                top: 296,
+                top: 312,
                 right: width - margin,
-                bottom: 452,
+                bottom: 468,
             }),
-            482,
+            498,
         )
     };
 
@@ -174,14 +174,23 @@ pub(super) unsafe fn draw(
 }
 
 unsafe fn draw_header(hdc: *mut c_void, fonts: Fonts) {
+    let icon = UiRect {
+        left: 28,
+        top: 18,
+        right: 86,
+        bottom: 76,
+    };
+
     unsafe {
-        draw_text(hdc, 30, 24, "MNEMOS", fonts.ui, theme::ACCENT);
-        draw_text(hdc, 30, 48, "Collector", fonts.title, theme::TEXT);
+        draw_card(hdc, icon, theme::SURFACE, theme::LINE);
+        mascot::draw(hdc, icon.left + 1, icon.top + 1, 56);
+        draw_text(hdc, 102, 24, "MNEMOS", fonts.ui, theme::ACCENT);
+        draw_text(hdc, 102, 48, "Collector", fonts.section, theme::TEXT);
         draw_text(
             hdc,
-            168,
-            60,
-            "Cristalix / Master Sword",
+            212,
+            51,
+            "desktop · Cristalix / Master Sword",
             fonts.ui,
             theme::TEXT_MUTED,
         );
@@ -241,7 +250,7 @@ unsafe fn draw_status_chips(
             chip_rect(chip_left, chips_top, chip_width),
             "Cristalix",
             if runtime.cristalix_running {
-                "найден"
+                "подтверждён"
             } else {
                 "ожидание"
             },
@@ -328,6 +337,14 @@ fn status_copy(runtime: &RuntimeSnapshot) -> (&'static str, &'static str, u32) {
         );
     }
 
+    if runtime.game_mode == "MasterSword" && !runtime.cristalix_running {
+        return (
+            "Master Sword найден",
+            "Контекст восстановлен из latest.log. Ждём свежую строку для подтверждения активной сессии.",
+            theme::AMBER,
+        );
+    }
+
     if !runtime.cristalix_running {
         return (
             "Ожидание Cristalix",
@@ -339,7 +356,7 @@ fn status_copy(runtime: &RuntimeSnapshot) -> (&'static str, &'static str, u32) {
     if runtime.game_mode == "MasterSword" && !runtime.realtime_connected {
         return (
             "Master Sword найден",
-            "Режим распознан. Восстанавливаем соединение с realtime-service.",
+            "Активная сессия подтверждена. Восстанавливаем соединение с realtime-service.",
             theme::AMBER,
         );
     }
@@ -347,14 +364,14 @@ fn status_copy(runtime: &RuntimeSnapshot) -> (&'static str, &'static str, u32) {
     if runtime.game_mode == "MasterSword" {
         return (
             "Master Sword найден",
-            "Режим распознан. Ожидаем подтверждение OBSERVING от realtime-service.",
+            "Активная сессия подтверждена. Ожидаем подтверждение OBSERVING от realtime-service.",
             theme::AMBER,
         );
     }
 
     (
-        "Cristalix найден",
-        "Collector анализирует latest.log и восстанавливает контекст без перезахода.",
+        "Cristalix подтверждён",
+        "Collector читает latest.log и отслеживает текущий режим без перезахода.",
         theme::TEXT,
     )
 }
