@@ -90,9 +90,7 @@ impl CristalixProcessDetector {
             running = true;
             collect_log_candidates(&locations, &mut candidates);
 
-            if session_fallback_match
-                && let Some(path) = default_log_path.as_ref()
-            {
+            if session_fallback_match && let Some(path) = default_log_path.as_ref() {
                 candidates.insert(path.clone());
             }
         }
