@@ -13,7 +13,10 @@ use windows_sys::Win32::Graphics::Gdi::{
     ScreenToClient, SetBkColor, SetTextColor, UpdateWindow,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    SetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+};
 use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
@@ -25,10 +28,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     MINMAXINFO, MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW,
     SIZE_MINIMIZED, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, SendMessageW, SetForegroundWindow,
     SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, WM_APP, WM_CLOSE,
-    WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_LBUTTONUP, WM_MOUSEWHEEL,
-    WM_NCCREATE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW,
-    WS_CHILD, WS_CLIPCHILDREN, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
-    WS_THICKFRAME, WS_VISIBLE,
+    WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_NCCREATE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_SIZE,
+    WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP,
+    WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE,
 };
 use zeroize::Zeroizing;
 
@@ -42,7 +45,7 @@ use super::DesktopLaunchContext;
 use super::mascot;
 use super::theme;
 use super::tray_popup;
-use super::view::{self, Fonts, Layout, ViewState};
+use super::view::{self, Fonts, InteractiveElement, Layout, ViewState};
 
 const CLASS_NAME: &str = "MnemosCollectorShell";
 const WINDOW_TITLE: &str = "Mnemos Collector";
@@ -56,6 +59,9 @@ const WM_ACTIVATION_RESULT: u32 = WM_APP + 2;
 const WM_COLLECTOR_STOPPED: u32 = WM_APP + 3;
 const TRAY_ID: u32 = 1;
 const RESIZE_BORDER: i32 = 7;
+const MIN_WINDOW_WIDTH: i32 = 760;
+const MIN_PROVISIONED_WINDOW_HEIGHT: i32 = 460;
+const MIN_ACTIVATION_WINDOW_HEIGHT: i32 = 610;
 const DWM_WINDOW_CORNER_PREFERENCE_ATTRIBUTE: u32 = 33;
 const DWM_WINDOW_CORNER_PREFERENCE_ROUND: u32 = 2;
 
@@ -177,6 +183,8 @@ struct DesktopWindow {
     mono_font: *mut c_void,
     edit_brush: *mut c_void,
     app_icon: *mut c_void,
+    hovered: Option<InteractiveElement>,
+    tracking_mouse_leave: bool,
     last_log_text: String,
     log_scroll_from_bottom: usize,
     last_runtime: RuntimeSnapshot,
@@ -200,6 +208,8 @@ impl DesktopWindow {
             mono_font: null_mut(),
             edit_brush: null_mut(),
             app_icon,
+            hovered: None,
+            tracking_mouse_leave: false,
             last_log_text: String::new(),
             log_scroll_from_bottom: 0,
             last_runtime: diagnostics::runtime_snapshot(),
@@ -367,6 +377,7 @@ impl DesktopWindow {
                 self.provisioned = true;
                 self.worker_started = true;
                 self.activation_error = None;
+                self.hovered = None;
                 self.update_control_visibility();
                 self.layout_controls(hwnd);
             }
@@ -451,6 +462,37 @@ impl DesktopWindow {
         self.invalidate(hwnd);
     }
 
+    fn mouse_move(&mut self, hwnd: HWND, x: i32, y: i32) {
+        let layout = window_layout(hwnd, self.provisioned);
+        let hovered = view::interactive_element_at(layout, self.provisioned, x, y);
+
+        if self.hovered != hovered {
+            self.hovered = hovered;
+            self.invalidate(hwnd);
+        }
+
+        if !self.tracking_mouse_leave {
+            let mut tracking = TRACKMOUSEEVENT {
+                cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: hwnd,
+                dwHoverTime: 0,
+            };
+
+            if unsafe { TrackMouseEvent(&mut tracking) } != 0 {
+                self.tracking_mouse_leave = true;
+            }
+        }
+    }
+
+    fn mouse_leave(&mut self, hwnd: HWND) {
+        self.tracking_mouse_leave = false;
+
+        if self.hovered.take().is_some() {
+            self.invalidate(hwnd);
+        }
+    }
+
     unsafe fn paint(&self, hwnd: HWND) {
         let mut paint: PAINTSTRUCT = unsafe { std::mem::zeroed() };
         let hdc = unsafe { BeginPaint(hwnd, &mut paint) };
@@ -478,6 +520,7 @@ impl DesktopWindow {
             provisioning: self.provisioning,
             activation_error: self.activation_error.as_deref(),
             debug_enabled: diagnostics::debug_enabled(),
+            hovered: self.hovered,
             log_text: &self.last_log_text,
             log_scroll_from_bottom: self.log_scroll_from_bottom,
         };
@@ -491,28 +534,21 @@ impl DesktopWindow {
     fn click(&mut self, hwnd: HWND, x: i32, y: i32) {
         let layout = window_layout(hwnd, self.provisioned);
 
-        if layout.window_close.contains(x, y) {
-            unsafe {
+        match view::interactive_element_at(layout, self.provisioned, x, y) {
+            Some(InteractiveElement::WindowClose) => unsafe {
                 ShowWindow(hwnd, SW_HIDE);
-            }
-            return;
-        }
-
-        if layout.window_minimize.contains(x, y) {
-            unsafe {
+            },
+            Some(InteractiveElement::WindowMinimize) => unsafe {
                 ShowWindow(hwnd, SW_MINIMIZE);
+            },
+            Some(InteractiveElement::DebugToggle) => {
+                diagnostics::set_debug_enabled(!diagnostics::debug_enabled());
+                self.invalidate(hwnd);
             }
-            return;
-        }
-
-        if layout.debug_toggle.contains(x, y) {
-            diagnostics::set_debug_enabled(!diagnostics::debug_enabled());
-            self.invalidate(hwnd);
-            return;
-        }
-
-        if !self.provisioned && layout.activate_button.contains(x, y) {
-            self.begin_activation(hwnd);
+            Some(InteractiveElement::ActivateButton) => {
+                self.begin_activation(hwnd);
+            }
+            None => {}
         }
     }
 
@@ -592,8 +628,10 @@ unsafe extern "system" fn window_proc(
         WM_GETMINMAXINFO => {
             if lparam != 0 {
                 let limits = unsafe { &mut *(lparam as *mut MINMAXINFO) };
-                limits.ptMinTrackSize.x = 760;
-                limits.ptMinTrackSize.y = 560;
+                let provisioned = !state.is_null() && unsafe { (*state).provisioned };
+
+                limits.ptMinTrackSize.x = MIN_WINDOW_WIDTH;
+                limits.ptMinTrackSize.y = minimum_window_height(provisioned);
             }
             return 0;
         }
@@ -607,6 +645,7 @@ unsafe extern "system" fn window_proc(
 
             if !state.is_null() {
                 unsafe {
+                    (*state).hovered = None;
                     (*state).layout_controls(hwnd);
                     (*state).invalidate(hwnd);
                 }
@@ -627,6 +666,25 @@ unsafe extern "system" fn window_proc(
 
                 unsafe {
                     (*state).click(hwnd, x, y);
+                }
+            }
+            return 0;
+        }
+        WM_MOUSEMOVE => {
+            if !state.is_null() {
+                let x = low_word(lparam as usize) as i16 as i32;
+                let y = high_word(lparam as usize) as i16 as i32;
+
+                unsafe {
+                    (*state).mouse_move(hwnd, x, y);
+                }
+            }
+            return 0;
+        }
+        WM_MOUSELEAVE => {
+            if !state.is_null() {
+                unsafe {
+                    (*state).mouse_leave(hwnd);
                 }
             }
             return 0;
@@ -755,6 +813,14 @@ fn hit_test_window(hwnd: HWND, provisioned: bool, point: POINT) -> LRESULT {
     }
 
     HTCLIENT as isize
+}
+
+fn minimum_window_height(provisioned: bool) -> i32 {
+    if provisioned {
+        MIN_PROVISIONED_WINDOW_HEIGHT
+    } else {
+        MIN_ACTIVATION_WINDOW_HEIGHT
+    }
 }
 
 async fn provision_current_installation(token: &str, device_name: &str) -> Result<Option<String>> {

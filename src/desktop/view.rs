@@ -72,11 +72,20 @@ pub(super) struct Fonts {
     pub mono: *mut c_void,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum InteractiveElement {
+    WindowMinimize,
+    WindowClose,
+    DebugToggle,
+    ActivateButton,
+}
+
 pub(super) struct ViewState<'a> {
     pub current_installation: bool,
     pub provisioning: bool,
     pub activation_error: Option<&'a str>,
     pub debug_enabled: bool,
+    pub hovered: Option<InteractiveElement>,
     pub log_text: &'a str,
     pub log_scroll_from_bottom: usize,
 }
@@ -195,6 +204,31 @@ pub(super) fn layout(width: i32, height: i32, provisioned: bool) -> Layout {
     }
 }
 
+pub(super) fn interactive_element_at(
+    layout: Layout,
+    provisioned: bool,
+    x: i32,
+    y: i32,
+) -> Option<InteractiveElement> {
+    if layout.window_close.contains(x, y) {
+        return Some(InteractiveElement::WindowClose);
+    }
+
+    if layout.window_minimize.contains(x, y) {
+        return Some(InteractiveElement::WindowMinimize);
+    }
+
+    if layout.debug_toggle.contains(x, y) {
+        return Some(InteractiveElement::DebugToggle);
+    }
+
+    if !provisioned && layout.activate_button.contains(x, y) {
+        return Some(InteractiveElement::ActivateButton);
+    }
+
+    None
+}
+
 pub(super) fn log_scroll_limit(text: &str, rect: UiRect) -> usize {
     let max_chars = log_chars_per_line(rect);
     let total_lines = wrapped_log_line_count(text, max_chars);
@@ -211,7 +245,7 @@ pub(super) unsafe fn draw(
     state: ViewState<'_>,
 ) {
     unsafe {
-        draw_header(hdc, layout, fonts);
+        draw_header(hdc, layout, fonts, state.hovered);
         draw_hero(hdc, runtime, layout, fonts);
 
         if let Some(activation) = layout.activation {
@@ -222,7 +256,12 @@ pub(super) unsafe fn draw(
     }
 }
 
-unsafe fn draw_header(hdc: *mut c_void, layout: Layout, fonts: Fonts) {
+unsafe fn draw_header(
+    hdc: *mut c_void,
+    layout: Layout,
+    fonts: Fonts,
+    hovered: Option<InteractiveElement>,
+) {
     let icon = UiRect {
         left: CONTENT_MARGIN,
         top: 12,
@@ -259,8 +298,22 @@ unsafe fn draw_header(hdc: *mut c_void, layout: Layout, fonts: Fonts) {
             theme::TEXT,
         );
 
-        draw_window_button(hdc, layout.window_minimize, "—", false, fonts.ui);
-        draw_window_button(hdc, layout.window_close, "×", true, fonts.ui);
+        draw_window_button(
+            hdc,
+            layout.window_minimize,
+            "—",
+            false,
+            hovered == Some(InteractiveElement::WindowMinimize),
+            fonts.ui,
+        );
+        draw_window_button(
+            hdc,
+            layout.window_close,
+            "×",
+            true,
+            hovered == Some(InteractiveElement::WindowClose),
+            fonts.ui,
+        );
     }
 }
 
@@ -541,6 +594,8 @@ unsafe fn draw_activation(
             } else {
                 "Активировать"
             },
+            state.hovered == Some(InteractiveElement::ActivateButton),
+            state.provisioning,
             fonts.ui,
         );
 
@@ -589,6 +644,7 @@ unsafe fn draw_logs_panel(hdc: *mut c_void, layout: Layout, fonts: Fonts, state:
             layout.debug_toggle,
             "Диагностика",
             state.debug_enabled,
+            state.hovered == Some(InteractiveElement::DebugToggle),
             fonts.ui,
         );
 
@@ -753,6 +809,7 @@ unsafe fn draw_toggle(
     rect: UiRect,
     label: &str,
     enabled: bool,
+    hovered: bool,
     font: *mut c_void,
 ) {
     let fill = if enabled {
@@ -760,7 +817,13 @@ unsafe fn draw_toggle(
     } else {
         theme::SURFACE_RAISED
     };
-    let border = if enabled { theme::ACCENT } else { theme::LINE };
+    let border = if enabled {
+        theme::ACCENT
+    } else if hovered {
+        theme::LINE_STRONG
+    } else {
+        theme::LINE
+    };
     let label_rect = UiRect {
         left: rect.left + 25,
         top: rect.top,
@@ -785,7 +848,7 @@ unsafe fn draw_toggle(
             label_rect,
             label,
             font,
-            if enabled {
+            if enabled || hovered {
                 theme::TEXT
             } else {
                 theme::TEXT_SECONDARY
@@ -794,10 +857,33 @@ unsafe fn draw_toggle(
     }
 }
 
-unsafe fn draw_primary_button(hdc: *mut c_void, rect: UiRect, label: &str, font: *mut c_void) {
+unsafe fn draw_primary_button(
+    hdc: *mut c_void,
+    rect: UiRect,
+    label: &str,
+    hovered: bool,
+    disabled: bool,
+    font: *mut c_void,
+) {
+    let fill = if disabled {
+        theme::ACCENT_DIM
+    } else {
+        theme::ACCENT
+    };
+    let border = if hovered && !disabled {
+        theme::TEXT_SECONDARY
+    } else {
+        theme::ACCENT
+    };
+    let text = if disabled {
+        theme::TEXT_SECONDARY
+    } else {
+        theme::BACKGROUND_DEEP
+    };
+
     unsafe {
-        draw_pill(hdc, rect, theme::ACCENT, theme::ACCENT);
-        draw_text_centered(hdc, rect.inset(8, 2), label, font, theme::BACKGROUND_DEEP);
+        draw_pill(hdc, rect, fill, border);
+        draw_text_centered(hdc, rect.inset(8, 2), label, font, text);
     }
 }
 
@@ -806,18 +892,17 @@ unsafe fn draw_window_button(
     rect: UiRect,
     label: &str,
     danger: bool,
+    hovered: bool,
     font: *mut c_void,
 ) {
-    let fill = if danger {
-        theme::DANGER_DIM
+    let (fill, border, text) = if danger && hovered {
+        (theme::DANGER, theme::DANGER, theme::BACKGROUND_DEEP)
+    } else if danger {
+        (theme::DANGER_DIM, theme::DANGER, theme::DANGER)
+    } else if hovered {
+        (theme::SURFACE_RAISED, theme::LINE_STRONG, theme::TEXT)
     } else {
-        theme::SURFACE
-    };
-    let border = if danger { theme::DANGER } else { theme::LINE };
-    let text = if danger {
-        theme::DANGER
-    } else {
-        theme::TEXT_SECONDARY
+        (theme::SURFACE, theme::LINE, theme::TEXT_SECONDARY)
     };
 
     unsafe {
