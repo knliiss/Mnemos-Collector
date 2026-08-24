@@ -9,8 +9,8 @@ use windows_sys::Win32::Graphics::Dwm::{
     DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, FrameRect, InvalidateRect,
-    PAINTSTRUCT, ScreenToClient, SetBkColor, SetTextColor, UpdateWindow,
+    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, InvalidateRect, PAINTSTRUCT,
+    ScreenToClient, SetBkColor, SetTextColor, UpdateWindow,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
@@ -60,6 +60,7 @@ const WM_ACTIVATION_RESULT: u32 = WM_APP + 2;
 const WM_COLLECTOR_STOPPED: u32 = WM_APP + 3;
 const TRAY_ID: u32 = 1;
 const RESIZE_BORDER: i32 = 7;
+const ACTIVATION_FIELD_OFFSET_Y: i32 = 4;
 const MIN_WINDOW_WIDTH: i32 = 760;
 const MIN_PROVISIONED_WINDOW_HEIGHT: i32 = 460;
 const MIN_ACTIVATION_WINDOW_HEIGHT: i32 = 610;
@@ -366,6 +367,7 @@ impl DesktopWindow {
 
     fn focus_token(&mut self, hwnd: HWND) {
         self.activation_button_focused = false;
+        self.hovered = None;
 
         unsafe {
             SetFocus(self.token_edit);
@@ -376,6 +378,7 @@ impl DesktopWindow {
 
     fn focus_device(&mut self, hwnd: HWND) {
         self.activation_button_focused = false;
+        self.hovered = None;
 
         unsafe {
             SetFocus(self.device_edit);
@@ -386,6 +389,7 @@ impl DesktopWindow {
 
     fn focus_activate_button(&mut self, hwnd: HWND) {
         self.activation_button_focused = true;
+        self.hovered = Some(InteractiveElement::ActivateButton);
 
         unsafe {
             SetFocus(hwnd);
@@ -617,9 +621,12 @@ impl DesktopWindow {
             view::fill_background(hdc, &client);
         }
 
-        let layout = view::layout(
-            client.right - client.left,
-            client.bottom - client.top,
+        let layout = adjusted_layout(
+            view::layout(
+                client.right - client.left,
+                client.bottom - client.top,
+                self.provisioned,
+            ),
             self.provisioned,
         );
         let runtime = diagnostics::runtime_snapshot();
@@ -641,42 +648,7 @@ impl DesktopWindow {
 
         unsafe {
             view::draw(hdc, &runtime, layout, fonts, state);
-            self.draw_activation_focus(hdc, hwnd, layout);
             EndPaint(hwnd, &paint);
-        }
-    }
-
-    unsafe fn draw_activation_focus(&self, hdc: *mut c_void, hwnd: HWND, layout: Layout) {
-        if self.provisioned || self.provisioning {
-            return;
-        }
-
-        let focus = unsafe { GetFocus() };
-        let focused = if focus == self.token_edit {
-            Some(layout.token_field)
-        } else if focus == self.device_edit {
-            Some(layout.device_field)
-        } else if focus == hwnd && self.activation_button_focused {
-            Some(layout.activate_button)
-        } else {
-            None
-        };
-
-        let Some(focused) = focused else {
-            return;
-        };
-
-        let brush = unsafe { CreateSolidBrush(theme::ACCENT) };
-        let rect = RECT {
-            left: focused.left - 1,
-            top: focused.top - 1,
-            right: focused.right + 1,
-            bottom: focused.bottom + 1,
-        };
-
-        unsafe {
-            FrameRect(hdc, &rect, brush);
-            DeleteObject(brush);
         }
     }
 
@@ -1101,11 +1073,33 @@ fn window_layout(hwnd: HWND, provisioned: bool) -> Layout {
         GetClientRect(hwnd, &mut client);
     }
 
-    view::layout(
-        client.right - client.left,
-        client.bottom - client.top,
+    adjusted_layout(
+        view::layout(
+            client.right - client.left,
+            client.bottom - client.top,
+            provisioned,
+        ),
         provisioned,
     )
+}
+
+fn adjusted_layout(mut layout: Layout, provisioned: bool) -> Layout {
+    if provisioned {
+        return layout;
+    }
+
+    shift_rect_y(&mut layout.token_field, ACTIVATION_FIELD_OFFSET_Y);
+    shift_rect_y(&mut layout.token_edit, ACTIVATION_FIELD_OFFSET_Y);
+    shift_rect_y(&mut layout.device_field, ACTIVATION_FIELD_OFFSET_Y);
+    shift_rect_y(&mut layout.device_edit, ACTIVATION_FIELD_OFFSET_Y);
+    shift_rect_y(&mut layout.activate_button, ACTIVATION_FIELD_OFFSET_Y);
+
+    layout
+}
+
+fn shift_rect_y(rect: &mut view::UiRect, offset: i32) {
+    rect.top += offset;
+    rect.bottom += offset;
 }
 
 fn apply_window_chrome(hwnd: HWND) {
@@ -1161,4 +1155,29 @@ fn low_word(value: usize) -> u16 {
 
 fn high_word(value: usize) -> u16 {
     ((value >> 16) & 0xffff) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ACTIVATION_FIELD_OFFSET_Y, adjusted_layout, view};
+
+    #[test]
+    fn activation_controls_leave_more_space_below_labels() {
+        let base = view::layout(760, 610, false);
+        let adjusted = adjusted_layout(base, false);
+
+        assert_eq!(
+            adjusted.token_field.top,
+            base.token_field.top + ACTIVATION_FIELD_OFFSET_Y
+        );
+        assert_eq!(
+            adjusted.device_field.top,
+            base.device_field.top + ACTIVATION_FIELD_OFFSET_Y
+        );
+        assert_eq!(
+            adjusted.activate_button.top,
+            base.activate_button.top + ACTIVATION_FIELD_OFFSET_Y
+        );
+        assert_eq!(adjusted.logs_card.top, base.logs_card.top);
+    }
 }

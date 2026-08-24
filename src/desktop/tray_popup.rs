@@ -11,13 +11,16 @@ use windows_sys::Win32::Graphics::Gdi::{
     UpdateWindow,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, ReleaseCapture, SetCapture, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowW, GWLP_USERDATA,
-    GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, RegisterClassW,
-    SM_CXSCREEN, SM_CYSCREEN, SW_RESTORE, SW_SHOWNOACTIVATE, SetCursor, SetForegroundWindow,
-    SetWindowLongPtrW, ShowWindow, WM_CANCELMODE, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEMOVE,
-    WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSW, WS_EX_NOACTIVATE,
+    GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect, IDC_ARROW, KillTimer,
+    LoadCursorW, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_RESTORE, SW_SHOWNOACTIVATE,
+    SetCursor, SetForegroundWindow, SetTimer, SetWindowLongPtrW, ShowWindow, WM_CANCELMODE,
+    WM_CAPTURECHANGED, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEMOVE, WM_NCCREATE,
+    WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WM_TIMER, WNDCLASSW, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
@@ -34,11 +37,14 @@ const POPUP_RADIUS: i32 = 24;
 const ITEM_RADIUS: i32 = 17;
 const SCREEN_EDGE_MARGIN: i32 = 8;
 const CURSOR_GAP: i32 = 6;
+const POINTER_WATCH_TIMER: usize = 1;
+const POINTER_WATCH_INTERVAL_MS: u32 = 16;
 
 struct TrayPopupState {
     owner: HWND,
     font: *mut c_void,
     hover: Option<TrayItem>,
+    closing: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -90,6 +96,7 @@ pub(super) fn show(owner: HWND, font: *mut c_void) -> Result<()> {
             owner,
             font,
             hover: None,
+            closing: false,
         });
         let state_ptr = Box::into_raw(state);
 
@@ -121,6 +128,7 @@ pub(super) fn show(owner: HWND, font: *mut c_void) -> Result<()> {
 
         ShowWindow(popup, SW_SHOWNOACTIVATE);
         UpdateWindow(popup);
+        SetTimer(popup, POINTER_WATCH_TIMER, POINTER_WATCH_INTERVAL_MS, None);
         SetCapture(popup);
 
         if !cursor.is_null() {
@@ -181,6 +189,14 @@ unsafe extern "system" fn window_proc(
 
             return 0;
         }
+        WM_TIMER if wparam == POINTER_WATCH_TIMER && !state.is_null() => {
+            if unsafe { pointer_pressed_outside(hwnd) } {
+                unsafe {
+                    close_popup(hwnd, state);
+                }
+            }
+            return 0;
+        }
         WM_LBUTTONDOWN if !state.is_null() => {
             let x = low_word(lparam as usize) as i16 as i32;
             let y = high_word(lparam as usize) as i16 as i32;
@@ -188,8 +204,7 @@ unsafe extern "system" fn window_proc(
             let owner = unsafe { (*state).owner };
 
             unsafe {
-                ReleaseCapture();
-                DestroyWindow(hwnd);
+                close_popup(hwnd, state);
             }
 
             match item {
@@ -205,15 +220,23 @@ unsafe extern "system" fn window_proc(
 
             return 0;
         }
-        WM_RBUTTONDOWN | WM_CANCELMODE => {
+        WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_CANCELMODE => {
             unsafe {
-                ReleaseCapture();
-                DestroyWindow(hwnd);
+                close_popup(hwnd, state);
+            }
+            return 0;
+        }
+        WM_CAPTURECHANGED => {
+            if !state.is_null() && unsafe { !(*state).closing } {
+                unsafe {
+                    close_popup(hwnd, state);
+                }
             }
             return 0;
         }
         WM_NCDESTROY => {
             unsafe {
+                KillTimer(hwnd, POINTER_WATCH_TIMER);
                 ReleaseCapture();
 
                 if !state.is_null() {
@@ -228,6 +251,38 @@ unsafe extern "system" fn window_proc(
     }
 
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
+
+unsafe fn close_popup(hwnd: HWND, state: *mut TrayPopupState) {
+    if state.is_null() || unsafe { (*state).closing } {
+        return;
+    }
+
+    unsafe {
+        (*state).closing = true;
+        KillTimer(hwnd, POINTER_WATCH_TIMER);
+        ReleaseCapture();
+        DestroyWindow(hwnd);
+    }
+}
+
+unsafe fn pointer_pressed_outside(hwnd: HWND) -> bool {
+    let mut cursor = POINT { x: 0, y: 0 };
+    let mut rect: RECT = unsafe { std::mem::zeroed() };
+
+    unsafe {
+        if GetCursorPos(&mut cursor) == 0 || GetWindowRect(hwnd, &mut rect) == 0 {
+            return false;
+        }
+    }
+
+    let pointer_pressed = unsafe {
+        GetAsyncKeyState(VK_LBUTTON as i32) < 0
+            || GetAsyncKeyState(VK_RBUTTON as i32) < 0
+            || GetAsyncKeyState(VK_MBUTTON as i32) < 0
+    };
+
+    pointer_pressed && !contains(rect, cursor.x, cursor.y)
 }
 
 unsafe fn paint(hwnd: HWND, state: &TrayPopupState) {
@@ -426,7 +481,7 @@ fn high_word(value: usize) -> u16 {
 mod tests {
     use windows_sys::Win32::Foundation::{POINT, RECT};
 
-    use super::{CURSOR_GAP, HEIGHT, SCREEN_EDGE_MARGIN, WIDTH, popup_position};
+    use super::{CURSOR_GAP, HEIGHT, SCREEN_EDGE_MARGIN, WIDTH, contains, popup_position};
 
     #[test]
     fn popup_uses_the_monitor_work_area_for_negative_coordinates() {
@@ -476,5 +531,21 @@ mod tests {
 
         assert_eq!(position.x, cursor.x - WIDTH);
         assert_eq!(position.y + HEIGHT + CURSOR_GAP, cursor.y);
+    }
+
+    #[test]
+    fn popup_rectangle_contains_only_points_inside_its_bounds() {
+        let rect = RECT {
+            left: 100,
+            top: 200,
+            right: 244,
+            bottom: 274,
+        };
+
+        assert!(contains(rect, 100, 200));
+        assert!(contains(rect, 243, 273));
+        assert!(!contains(rect, 99, 200));
+        assert!(!contains(rect, 244, 273));
+        assert!(!contains(rect, 243, 274));
     }
 }
