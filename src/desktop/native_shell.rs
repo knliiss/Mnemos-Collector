@@ -19,11 +19,11 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyMenu, DestroyWindow, DispatchMessageW, EM_SCROLLCARET, EM_SETSEL, ES_AUTOHSCROLL,
-    ES_AUTOVSCROLL, ES_MULTILINE, ES_PASSWORD, ES_READONLY, GWLP_USERDATA, GetClientRect,
-    GetCursorPos, GetMessageW, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW,
-    IDI_APPLICATION, LoadCursorW, LoadIconW, MF_STRING, MSG, MessageBoxW, MoveWindow, PostMessageW,
-    PostQuitMessage, RegisterClassW, SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW, SendMessageW,
+    DestroyMenu, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE,
+    ES_PASSWORD, ES_READONLY, GWLP_USERDATA, GetClientRect, GetCursorPos, GetMessageW,
+    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW, IDI_APPLICATION,
+    LoadCursorW, LoadIconW, MF_STRING, MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage,
+    RegisterClassW, SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW, SendMessageW,
     SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TPM_BOTTOMALIGN,
     TPM_LEFTALIGN, TrackPopupMenu, TranslateMessage, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT,
     WM_CTLCOLORSTATIC, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP, WM_NCCREATE, WM_PAINT,
@@ -46,6 +46,8 @@ const CLASS_NAME: &str = "MnemosCollectorShell";
 const WINDOW_TITLE: &str = "Mnemos Collector";
 const TIMER_REFRESH: usize = 1;
 const REFRESH_INTERVAL_MS: u32 = 750;
+const EM_SETSEL_MESSAGE: u32 = 0x00B1;
+const EM_SCROLLCARET_MESSAGE: u32 = 0x00B7;
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_ACTIVATION_RESULT: u32 = WM_APP + 2;
 const WM_COLLECTOR_STOPPED: u32 = WM_APP + 3;
@@ -405,8 +407,8 @@ impl DesktopWindow {
 
             if follow_tail {
                 let length = GetWindowTextLengthW(self.logs_edit).max(0) as usize;
-                SendMessageW(self.logs_edit, EM_SETSEL, length, length as isize);
-                SendMessageW(self.logs_edit, EM_SCROLLCARET, 0, 0);
+                SendMessageW(self.logs_edit, EM_SETSEL_MESSAGE, length, length as isize);
+                SendMessageW(self.logs_edit, EM_SCROLLCARET_MESSAGE, 0, 0);
             }
         }
     }
