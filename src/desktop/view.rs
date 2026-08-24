@@ -1,9 +1,10 @@
 use std::ffi::c_void;
 
-use windows_sys::Win32::Foundation::RECT;
+use windows_sys::Win32::Foundation::{RECT, SIZE};
 use windows_sys::Win32::Graphics::Gdi::{
-    CreatePen, CreateSolidBrush, DeleteObject, Ellipse, FillRect, RoundRect, SelectObject,
-    SetBkMode, SetTextColor, TextOutW,
+    CreatePen, CreateSolidBrush, DeleteObject, Ellipse, FillRect, GetTextExtentPoint32W,
+    IntersectClipRect, RestoreDC, RoundRect, SaveDC, SelectObject, SetBkMode, SetTextColor,
+    TextOutW,
 };
 
 use crate::diagnostics::RuntimeSnapshot;
@@ -13,6 +14,9 @@ use super::theme;
 
 const LOG_LINE_HEIGHT: i32 = 18;
 const LOG_CHAR_WIDTH: i32 = 8;
+const CONTENT_MARGIN: i32 = 22;
+const HEADER_HEIGHT: i32 = 68;
+const CARD_RADIUS: i32 = 24;
 
 #[derive(Clone, Copy)]
 pub(super) struct UiRect {
@@ -33,6 +37,15 @@ impl UiRect {
 
     pub fn contains(self, x: i32, y: i32) -> bool {
         x >= self.left && x <= self.right && y >= self.top && y <= self.bottom
+    }
+
+    fn inset(self, horizontal: i32, vertical: i32) -> Self {
+        Self {
+            left: self.left + horizontal,
+            top: self.top + vertical,
+            right: self.right - horizontal,
+            bottom: self.bottom - vertical,
+        }
     }
 }
 
@@ -71,42 +84,42 @@ struct LogVisualLine {
 }
 
 pub(super) fn layout(width: i32, height: i32, provisioned: bool) -> Layout {
-    let margin = 22;
-    let content_right = (width - margin).max(margin + 680);
+    let content_right = (width - CONTENT_MARGIN).max(CONTENT_MARGIN + 680);
+    let hero_top = HEADER_HEIGHT + 6;
+    let hero_height = 154;
 
     let hero = UiRect {
-        left: margin,
-        top: 76,
+        left: CONTENT_MARGIN,
+        top: hero_top,
         right: content_right,
-        bottom: 210,
+        bottom: hero_top + hero_height,
     };
 
     let (activation, logs_top) = if provisioned {
-        (None, 226)
+        (None, hero.bottom + 16)
     } else {
-        (
-            Some(UiRect {
-                left: margin,
-                top: 226,
-                right: content_right,
-                bottom: 356,
-            }),
-            372,
-        )
+        let activation = UiRect {
+            left: CONTENT_MARGIN,
+            top: hero.bottom + 16,
+            right: content_right,
+            bottom: hero.bottom + 150,
+        };
+
+        (Some(activation), activation.bottom + 16)
     };
 
     let activation_rect = activation.unwrap_or(UiRect {
-        left: margin,
+        left: CONTENT_MARGIN,
         top: 0,
         right: content_right,
         bottom: 0,
     });
-    let edit_top = activation_rect.top + 70;
-    let available = (activation_rect.width() - 36).max(540);
-    let button_width = 138;
-    let device_width = 184;
+    let edit_top = activation_rect.top + 72;
+    let inner_width = (activation_rect.width() - 36).max(540);
+    let device_width = 176;
+    let button_width = 132;
     let gap = 10;
-    let token_width = (available - button_width - device_width - gap * 2).max(210);
+    let token_width = (inner_width - device_width - button_width - gap * 2).max(210);
 
     let token_edit = UiRect {
         left: activation_rect.left + 18,
@@ -128,20 +141,20 @@ pub(super) fn layout(width: i32, height: i32, provisioned: bool) -> Layout {
     };
 
     let logs_card = UiRect {
-        left: margin,
+        left: CONTENT_MARGIN,
         top: logs_top,
         right: content_right,
-        bottom: (height - margin).max(logs_top + 190),
+        bottom: (height - CONTENT_MARGIN).max(logs_top + 190),
     };
     let debug_toggle = UiRect {
-        left: logs_card.right - 138,
-        top: logs_card.top + 12,
+        left: logs_card.right - 136,
+        top: logs_card.top + 13,
         right: logs_card.right - 14,
-        bottom: logs_card.top + 40,
+        bottom: logs_card.top + 41,
     };
     let logs_view = UiRect {
         left: logs_card.left + 14,
-        top: logs_card.top + 50,
+        top: logs_card.top + 52,
         right: logs_card.right - 14,
         bottom: logs_card.bottom - 14,
     };
@@ -187,55 +200,92 @@ pub(super) unsafe fn draw(
 
 unsafe fn draw_header(hdc: *mut c_void, fonts: Fonts) {
     let icon = UiRect {
-        left: 22,
-        top: 14,
-        right: 64,
+        left: CONTENT_MARGIN,
+        top: 12,
+        right: CONTENT_MARGIN + 44,
         bottom: 56,
     };
 
     unsafe {
-        draw_card(hdc, icon, theme::SURFACE, theme::LINE);
-        mascot::draw(hdc, icon.left + 1, icon.top + 1, 40);
+        draw_card_with_radius(hdc, icon, theme::SURFACE, theme::LINE, 18);
+        mascot::draw(hdc, icon.left + 2, icon.top + 2, 40);
 
-        draw_text(hdc, 76, 16, "MNEMOS", fonts.ui, theme::ACCENT);
-        draw_text(hdc, 76, 36, "Collector", fonts.section, theme::TEXT);
+        draw_text_emphasis(
+            hdc,
+            UiRect {
+                left: 78,
+                top: 14,
+                right: 210,
+                bottom: 34,
+            },
+            "MNEMOS",
+            fonts.ui,
+            theme::ACCENT,
+        );
+        draw_text_emphasis(
+            hdc,
+            UiRect {
+                left: 78,
+                top: 34,
+                right: 250,
+                bottom: 60,
+            },
+            "Collector",
+            fonts.section,
+            theme::TEXT,
+        );
     }
 }
 
 unsafe fn draw_hero(hdc: *mut c_void, runtime: &RuntimeSnapshot, layout: Layout, fonts: Fonts) {
     let (title, detail, status_color) = status_copy(runtime);
     let rect = layout.hero;
+    let mascot_size = 48;
+    let mascot_left = rect.right - 68;
+    let text_right = mascot_left - 14;
 
     unsafe {
-        draw_card(hdc, rect, theme::SURFACE, theme::LINE);
+        draw_card_with_radius(hdc, rect, theme::SURFACE, theme::LINE, CARD_RADIUS);
         draw_accent_bar(hdc, rect, status_color);
 
-        draw_text(
+        draw_text_emphasis(
             hdc,
-            rect.left + 20,
-            rect.top + 15,
+            UiRect {
+                left: rect.left + 20,
+                top: rect.top + 14,
+                right: text_right,
+                bottom: rect.top + 34,
+            },
             "СТАТУС",
             fonts.ui,
             theme::ACCENT,
         );
-        draw_text(
+        draw_text_clipped(
             hdc,
-            rect.left + 20,
-            rect.top + 36,
+            UiRect {
+                left: rect.left + 20,
+                top: rect.top + 35,
+                right: text_right,
+                bottom: rect.top + 70,
+            },
             title,
             fonts.title,
             status_color,
         );
-        draw_text(
+        draw_text_clipped(
             hdc,
-            rect.left + 20,
-            rect.top + 68,
+            UiRect {
+                left: rect.left + 20,
+                top: rect.top + 70,
+                right: text_right,
+                bottom: rect.top + 94,
+            },
             detail,
             fonts.ui,
             theme::TEXT_SECONDARY,
         );
 
-        mascot::draw(hdc, rect.right - 72, rect.top + 16, 52);
+        mascot::draw(hdc, mascot_left, rect.top + 17, mascot_size);
         draw_status_tiles(hdc, runtime, rect, fonts);
     }
 }
@@ -251,25 +301,26 @@ unsafe fn draw_status_tiles(
     let right = rect.right - 20;
     let available = right - left;
     let tile_width = (available - gap * 2) / 3;
-    let top = rect.bottom - 44;
+    let top = rect.bottom - 50;
+    let bottom = rect.bottom - 12;
 
     let game = UiRect {
         left,
         top,
         right: left + tile_width,
-        bottom: rect.bottom - 14,
+        bottom,
     };
     let mode = UiRect {
         left: game.right + gap,
         top,
         right: game.right + gap + tile_width,
-        bottom: rect.bottom - 14,
+        bottom,
     };
     let mnemos = UiRect {
         left: mode.right + gap,
         top,
         right,
-        bottom: rect.bottom - 14,
+        bottom,
     };
 
     unsafe {
@@ -334,25 +385,24 @@ unsafe fn draw_status_tile(
     status_color: u32,
     fonts: Fonts,
 ) {
+    let label_rect = UiRect {
+        left: rect.left + 24,
+        top: rect.top + 4,
+        right: rect.right - 10,
+        bottom: rect.top + 20,
+    };
+    let value_rect = UiRect {
+        left: rect.left + 12,
+        top: rect.top + 19,
+        right: rect.right - 10,
+        bottom: rect.bottom - 3,
+    };
+
     unsafe {
         draw_card_with_radius(hdc, rect, theme::SURFACE_RAISED, theme::LINE, 18);
-        draw_dot(hdc, rect.left + 11, rect.top + 11, status_color);
-        draw_text(
-            hdc,
-            rect.left + 23,
-            rect.top + 4,
-            label,
-            fonts.ui,
-            theme::TEXT_MUTED,
-        );
-        draw_text(
-            hdc,
-            rect.left + 84,
-            rect.top + 4,
-            value,
-            fonts.ui,
-            theme::TEXT,
-        );
+        draw_dot(hdc, rect.left + 11, rect.top + 10, status_color);
+        draw_text_clipped(hdc, label_rect, label, fonts.ui, theme::TEXT_MUTED);
+        draw_text_emphasis(hdc, value_rect, value, fonts.ui, theme::TEXT);
     }
 }
 
@@ -412,12 +462,16 @@ unsafe fn draw_activation(
     state: &ViewState<'_>,
 ) {
     unsafe {
-        draw_card(hdc, activation, theme::SURFACE, theme::LINE);
+        draw_card_with_radius(hdc, activation, theme::SURFACE, theme::LINE, CARD_RADIUS);
 
-        draw_text(
+        draw_text_emphasis(
             hdc,
-            activation.left + 18,
-            activation.top + 15,
+            UiRect {
+                left: activation.left + 18,
+                top: activation.top + 14,
+                right: activation.right - 18,
+                bottom: activation.top + 40,
+            },
             if state.current_installation {
                 "Подключить Collector"
             } else {
@@ -427,18 +481,26 @@ unsafe fn draw_activation(
             theme::TEXT,
         );
 
-        draw_text(
+        draw_text_clipped(
             hdc,
-            activation.left + 18,
-            activation.top + 45,
+            UiRect {
+                left: activation.left + 18,
+                top: activation.top + 46,
+                right: layout.token_edit.right,
+                bottom: activation.top + 65,
+            },
             "Код активации",
             fonts.ui,
             theme::TEXT_MUTED,
         );
-        draw_text(
+        draw_text_clipped(
             hdc,
-            layout.device_edit.left,
-            activation.top + 45,
+            UiRect {
+                left: layout.device_edit.left,
+                top: activation.top + 46,
+                right: layout.device_edit.right,
+                bottom: activation.top + 65,
+            },
             "Устройство",
             fonts.ui,
             theme::TEXT_MUTED,
@@ -456,10 +518,14 @@ unsafe fn draw_activation(
         );
 
         if let Some(error) = state.activation_error {
-            draw_text(
+            draw_text_clipped(
                 hdc,
-                activation.left + 18,
-                activation.bottom - 22,
+                UiRect {
+                    left: activation.left + 18,
+                    top: activation.bottom - 23,
+                    right: activation.right - 18,
+                    bottom: activation.bottom - 5,
+                },
                 error,
                 fonts.ui,
                 theme::DANGER,
@@ -470,12 +536,16 @@ unsafe fn draw_activation(
 
 unsafe fn draw_logs_panel(hdc: *mut c_void, layout: Layout, fonts: Fonts, state: &ViewState<'_>) {
     unsafe {
-        draw_card(hdc, layout.logs_card, theme::SURFACE, theme::LINE);
+        draw_card_with_radius(hdc, layout.logs_card, theme::SURFACE, theme::LINE, CARD_RADIUS);
 
-        draw_text(
+        draw_text_emphasis(
             hdc,
-            layout.logs_card.left + 16,
-            layout.logs_card.top + 14,
+            UiRect {
+                left: layout.logs_card.left + 16,
+                top: layout.logs_card.top + 13,
+                right: layout.debug_toggle.left - 12,
+                bottom: layout.logs_card.top + 42,
+            },
             "Журнал",
             fonts.section,
             theme::TEXT,
@@ -507,7 +577,7 @@ unsafe fn draw_log_view(
     font: *mut c_void,
 ) {
     unsafe {
-        draw_card_with_radius(hdc, rect, theme::LOG_SURFACE, theme::LINE, 16);
+        draw_card_with_radius(hdc, rect, theme::LOG_SURFACE, theme::LINE, 18);
     }
 
     let text_rect = UiRect {
@@ -527,7 +597,18 @@ unsafe fn draw_log_view(
 
     for line in &lines[start..end] {
         unsafe {
-            draw_text(hdc, text_rect.left, y, &line.text, font, line.color);
+            draw_text_clipped(
+                hdc,
+                UiRect {
+                    left: text_rect.left,
+                    top: y,
+                    right: text_rect.right,
+                    bottom: y + LOG_LINE_HEIGHT,
+                },
+                &line.text,
+                font,
+                line.color,
+            );
         }
         y += LOG_LINE_HEIGHT;
     }
@@ -647,12 +728,18 @@ unsafe fn draw_toggle(
         theme::SURFACE_RAISED
     };
     let border = if enabled { theme::ACCENT } else { theme::LINE };
+    let label_rect = UiRect {
+        left: rect.left + 25,
+        top: rect.top,
+        right: rect.right - 8,
+        bottom: rect.bottom,
+    };
 
     unsafe {
         draw_pill(hdc, rect, fill, border);
         draw_dot(
             hdc,
-            rect.left + 11,
+            rect.left + 10,
             rect.top + 10,
             if enabled {
                 theme::ACCENT
@@ -660,10 +747,9 @@ unsafe fn draw_toggle(
                 theme::TEXT_MUTED
             },
         );
-        draw_text(
+        draw_text_centered_vertically(
             hdc,
-            rect.left + 26,
-            rect.top + 5,
+            label_rect,
             label,
             font,
             if enabled {
@@ -678,23 +764,16 @@ unsafe fn draw_toggle(
 unsafe fn draw_primary_button(hdc: *mut c_void, rect: UiRect, label: &str, font: *mut c_void) {
     unsafe {
         draw_pill(hdc, rect, theme::ACCENT, theme::ACCENT);
-        draw_text(
-            hdc,
-            rect.left + 14,
-            rect.top + 6,
-            label,
-            font,
-            theme::BACKGROUND_DEEP,
-        );
+        draw_text_centered(hdc, rect.inset(8, 2), label, font, theme::BACKGROUND_DEEP);
     }
 }
 
 unsafe fn draw_accent_bar(hdc: *mut c_void, rect: UiRect, color: u32) {
     let bar = UiRect {
         left: rect.left + 1,
-        top: rect.top + 22,
+        top: rect.top + 24,
         right: rect.left + 4,
-        bottom: rect.top + 76,
+        bottom: rect.top + 82,
     };
 
     unsafe {
@@ -714,12 +793,6 @@ unsafe fn draw_dot(hdc: *mut c_void, x: i32, y: i32, color: u32) {
         SelectObject(hdc, previous_brush);
         DeleteObject(pen);
         DeleteObject(brush);
-    }
-}
-
-unsafe fn draw_card(hdc: *mut c_void, rect: UiRect, fill: u32, border: u32) {
-    unsafe {
-        draw_card_with_radius(hdc, rect, fill, border, 22);
     }
 }
 
@@ -760,15 +833,136 @@ unsafe fn draw_card_with_radius(
     }
 }
 
-unsafe fn draw_text(hdc: *mut c_void, x: i32, y: i32, text: &str, font: *mut c_void, color: u32) {
+unsafe fn draw_text_clipped(
+    hdc: *mut c_void,
+    rect: UiRect,
+    text: &str,
+    font: *mut c_void,
+    color: u32,
+) {
     let text = text.encode_utf16().collect::<Vec<_>>();
+    let saved = unsafe { SaveDC(hdc) };
     let previous_font = unsafe { SelectObject(hdc, font) };
 
     unsafe {
+        IntersectClipRect(hdc, rect.left, rect.top, rect.right, rect.bottom);
         SetTextColor(hdc, color);
         SetBkMode(hdc, 1);
-        TextOutW(hdc, x, y, text.as_ptr(), text.len() as i32);
+        TextOutW(
+            hdc,
+            rect.left,
+            rect.top,
+            text.as_ptr(),
+            text.len() as i32,
+        );
         SelectObject(hdc, previous_font);
+
+        if saved != 0 {
+            RestoreDC(hdc, saved);
+        }
+    }
+}
+
+unsafe fn draw_text_emphasis(
+    hdc: *mut c_void,
+    rect: UiRect,
+    text: &str,
+    font: *mut c_void,
+    color: u32,
+) {
+    unsafe {
+        draw_text_clipped(hdc, rect, text, font, color);
+        draw_text_clipped(
+            hdc,
+            UiRect {
+                left: rect.left + 1,
+                top: rect.top,
+                right: rect.right,
+                bottom: rect.bottom,
+            },
+            text,
+            font,
+            color,
+        );
+    }
+}
+
+unsafe fn draw_text_centered(
+    hdc: *mut c_void,
+    rect: UiRect,
+    text: &str,
+    font: *mut c_void,
+    color: u32,
+) {
+    let text_utf16 = text.encode_utf16().collect::<Vec<_>>();
+    let previous_font = unsafe { SelectObject(hdc, font) };
+    let mut size = SIZE { cx: 0, cy: 0 };
+
+    unsafe {
+        GetTextExtentPoint32W(
+            hdc,
+            text_utf16.as_ptr(),
+            text_utf16.len() as i32,
+            &mut size,
+        );
+        SelectObject(hdc, previous_font);
+    }
+
+    let x = rect.left + ((rect.width() - size.cx).max(0) / 2);
+    let y = rect.top + ((rect.height() - size.cy).max(0) / 2);
+
+    unsafe {
+        draw_text_clipped(
+            hdc,
+            UiRect {
+                left: x,
+                top: y,
+                right: rect.right,
+                bottom: rect.bottom,
+            },
+            text,
+            font,
+            color,
+        );
+    }
+}
+
+unsafe fn draw_text_centered_vertically(
+    hdc: *mut c_void,
+    rect: UiRect,
+    text: &str,
+    font: *mut c_void,
+    color: u32,
+) {
+    let text_utf16 = text.encode_utf16().collect::<Vec<_>>();
+    let previous_font = unsafe { SelectObject(hdc, font) };
+    let mut size = SIZE { cx: 0, cy: 0 };
+
+    unsafe {
+        GetTextExtentPoint32W(
+            hdc,
+            text_utf16.as_ptr(),
+            text_utf16.len() as i32,
+            &mut size,
+        );
+        SelectObject(hdc, previous_font);
+    }
+
+    let y = rect.top + ((rect.height() - size.cy).max(0) / 2);
+
+    unsafe {
+        draw_text_clipped(
+            hdc,
+            UiRect {
+                left: rect.left,
+                top: y,
+                right: rect.right,
+                bottom: rect.bottom,
+            },
+            text,
+            font,
+            color,
+        );
     }
 }
 
