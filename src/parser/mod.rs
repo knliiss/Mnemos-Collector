@@ -102,11 +102,11 @@ impl LogParser {
 
         let raid_locations = parse_raid_locations(payload);
 
-        if !raid_locations.is_empty() {
-            if let Some(locations) = self.pending_raid.as_mut() {
-                locations.extend(raid_locations);
-                return Vec::new();
-            }
+        if !raid_locations.is_empty()
+            && let Some(locations) = self.pending_raid.as_mut()
+        {
+            locations.extend(raid_locations);
+            return Vec::new();
         }
 
         let mut events = self.flush_pending_raid();
