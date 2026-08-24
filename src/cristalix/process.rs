@@ -90,10 +90,10 @@ impl CristalixProcessDetector {
             running = true;
             collect_log_candidates(&locations, &mut candidates);
 
-            if session_fallback_match {
-                if let Some(path) = default_log_path.as_ref() {
-                    candidates.insert(path.clone());
-                }
+            if session_fallback_match
+                && let Some(path) = default_log_path.as_ref()
+            {
+                candidates.insert(path.clone());
             }
         }
 
@@ -186,14 +186,14 @@ fn references_cristalix_game(value: &str) -> bool {
 }
 
 fn process_matches_log_session(process_start: u64, metadata: &Metadata) -> bool {
-    if let Ok(created) = metadata.created() {
-        if let Ok(created_since_epoch) = created.duration_since(UNIX_EPOCH) {
-            return timestamps_within(
-                process_start,
-                created_since_epoch.as_secs(),
-                LOG_CREATION_START_TOLERANCE,
-            );
-        }
+    if let Ok(created) = metadata.created()
+        && let Ok(created_since_epoch) = created.duration_since(UNIX_EPOCH)
+    {
+        return timestamps_within(
+            process_start,
+            created_since_epoch.as_secs(),
+            LOG_CREATION_START_TOLERANCE,
+        );
     }
 
     let Ok(modified) = metadata.modified() else {
