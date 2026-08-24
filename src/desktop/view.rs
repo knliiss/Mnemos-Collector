@@ -536,7 +536,13 @@ unsafe fn draw_activation(
 
 unsafe fn draw_logs_panel(hdc: *mut c_void, layout: Layout, fonts: Fonts, state: &ViewState<'_>) {
     unsafe {
-        draw_card_with_radius(hdc, layout.logs_card, theme::SURFACE, theme::LINE, CARD_RADIUS);
+        draw_card_with_radius(
+            hdc,
+            layout.logs_card,
+            theme::SURFACE,
+            theme::LINE,
+            CARD_RADIUS,
+        );
 
         draw_text_emphasis(
             hdc,
@@ -848,13 +854,7 @@ unsafe fn draw_text_clipped(
         IntersectClipRect(hdc, rect.left, rect.top, rect.right, rect.bottom);
         SetTextColor(hdc, color);
         SetBkMode(hdc, 1);
-        TextOutW(
-            hdc,
-            rect.left,
-            rect.top,
-            text.as_ptr(),
-            text.len() as i32,
-        );
+        TextOutW(hdc, rect.left, rect.top, text.as_ptr(), text.len() as i32);
         SelectObject(hdc, previous_font);
 
         if saved != 0 {
@@ -899,12 +899,7 @@ unsafe fn draw_text_centered(
     let mut size = SIZE { cx: 0, cy: 0 };
 
     unsafe {
-        GetTextExtentPoint32W(
-            hdc,
-            text_utf16.as_ptr(),
-            text_utf16.len() as i32,
-            &mut size,
-        );
+        GetTextExtentPoint32W(hdc, text_utf16.as_ptr(), text_utf16.len() as i32, &mut size);
         SelectObject(hdc, previous_font);
     }
 
@@ -939,12 +934,7 @@ unsafe fn draw_text_centered_vertically(
     let mut size = SIZE { cx: 0, cy: 0 };
 
     unsafe {
-        GetTextExtentPoint32W(
-            hdc,
-            text_utf16.as_ptr(),
-            text_utf16.len() as i32,
-            &mut size,
-        );
+        GetTextExtentPoint32W(hdc, text_utf16.as_ptr(), text_utf16.len() as i32, &mut size);
         SelectObject(hdc, previous_font);
     }
 
