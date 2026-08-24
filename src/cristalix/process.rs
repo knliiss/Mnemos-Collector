@@ -13,6 +13,7 @@ pub struct CristalixProcessSnapshot {
     pub launcher_processes: usize,
     pub direct_matches: usize,
     pub ancestry_matches: usize,
+    pub session_fallback_matches: usize,
 }
 
 #[derive(Debug)]
@@ -76,6 +77,7 @@ impl CristalixProcessDetector {
             launcher_processes: launcher_pids.len(),
             direct_matches,
             ancestry_matches,
+            session_fallback_matches: 0,
         }
     }
 
