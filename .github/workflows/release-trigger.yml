@@ -10,6 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: write
   contents: write
 
 jobs:
@@ -40,13 +41,10 @@ jobs:
           version="${tag#v}"
           cargo_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)"
 
-          git fetch origin main --no-tags
-          main_sha="$(git rev-parse origin/main)"
+          git fetch origin main --tags --force
 
-          if [ "$GITHUB_SHA" != "$main_sha" ]; then
-            echo "Release branch must point exactly to the current main HEAD."
-            echo "release branch: $GITHUB_SHA"
-            echo "main:           $main_sha"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "Release trigger branch must point to a commit contained in main."
             exit 1
           fi
 
@@ -55,14 +53,35 @@ jobs:
             exit 1
           fi
 
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null 2>&1; then
-            echo "Release tag $tag already exists."
-            exit 1
+          existing_tag_sha="$(git rev-list -n 1 "$tag" 2>/dev/null || true)"
+
+          if [ -n "$existing_tag_sha" ]; then
+            if ! git merge-base --is-ancestor "$existing_tag_sha" refs/remotes/origin/main; then
+              echo "Existing release tag $tag is not contained in main."
+              exit 1
+            fi
+
+            tagged_cargo_version="$(
+              git show "$existing_tag_sha:Cargo.toml" \
+                | sed -n 's/^version = "\([^"]*\)"$/\1/p' \
+                | head -n 1
+            )"
+
+            if [ "$version" != "$tagged_cargo_version" ]; then
+              echo "Existing release tag $tag does not match its Cargo.toml version $tagged_cargo_version."
+              exit 1
+            fi
+
+            echo "Release tag $tag already exists at $existing_tag_sha; reusing it."
+            echo "create_tag=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "create_tag=true" >> "$GITHUB_OUTPUT"
           fi
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Create release tag
+        if: steps.release.outputs.create_tag == 'true'
         shell: bash
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
@@ -71,6 +90,19 @@ jobs:
 
           git tag "$RELEASE_TAG" "$GITHUB_SHA"
           git push origin "refs/tags/$RELEASE_TAG"
+
+      - name: Dispatch release workflow
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          gh workflow run release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f tag="$RELEASE_TAG"
 
       - name: Remove release trigger branch
         if: success()
