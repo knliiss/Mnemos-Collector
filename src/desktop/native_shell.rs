@@ -9,9 +9,9 @@ use windows_sys::Win32::Graphics::Dwm::{
     DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, FillRect, InvalidateRect,
-    PAINTSTRUCT, SelectObject, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT, TextOutW,
-    UpdateWindow,
+    BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
+    InvalidateRect, PAINTSTRUCT, RoundRect, SelectObject, SetBkColor, SetBkMode, SetTextColor,
+    TRANSPARENT, TextOutW, UpdateWindow,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
@@ -61,9 +61,11 @@ const WM_COLLECTOR_STOPPED: u32 = WM_APP + 3;
 const TRAY_ID: u32 = 1;
 const MENU_OPEN: usize = 4101;
 const MENU_EXIT: usize = 4102;
-const TRAY_MENU_WIDTH: u32 = 248;
-const TRAY_MENU_ITEM_HEIGHT: u32 = 44;
+const TRAY_MENU_WIDTH: u32 = 184;
+const TRAY_MENU_ITEM_HEIGHT: u32 = 38;
 const OWNER_DRAW_SELECTED: u32 = 0x0001;
+const DWM_WINDOW_CORNER_PREFERENCE_ATTRIBUTE: u32 = 33;
+const DWM_WINDOW_CORNER_PREFERENCE_ROUND: u32 = 2;
 
 #[repr(C)]
 struct MeasureItemStruct {
@@ -133,8 +135,8 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            1040,
-            780,
+            920,
+            700,
             null_mut(),
             null_mut(),
             instance,
@@ -293,7 +295,7 @@ impl DesktopWindow {
         data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         data.uCallbackMessage = WM_TRAY;
         data.hIcon = self.app_icon;
-        write_wide_array(&mut data.szTip, "Mnemos Collector · Master Sword");
+        write_wide_array(&mut data.szTip, "Mnemos Collector");
 
         if unsafe { Shell_NotifyIconW(NIM_ADD, &data) } == 0 {
             return Err(io::Error::last_os_error()).context("failed to create collector tray icon");
@@ -518,13 +520,6 @@ impl DesktopWindow {
     fn click(&mut self, hwnd: HWND, x: i32, y: i32) {
         let layout = window_layout(hwnd, self.provisioned);
 
-        if layout.tray_button.contains(x, y) {
-            unsafe {
-                ShowWindow(hwnd, SW_HIDE);
-            }
-            return;
-        }
-
         if layout.debug_toggle.contains(x, y) {
             diagnostics::set_debug_enabled(!diagnostics::debug_enabled());
             self.invalidate(hwnd);
@@ -564,8 +559,6 @@ impl DesktopWindow {
 
             let mut cursor = POINT { x: 0, y: 0 };
             GetCursorPos(&mut cursor);
-
-            ShowWindow(hwnd, SW_HIDE);
             SetForegroundWindow(hwnd);
 
             let command = TrackPopupMenu(
@@ -589,31 +582,55 @@ impl DesktopWindow {
                 MENU_EXIT => {
                     DestroyWindow(hwnd);
                 }
-                _ => {
-                    ShowWindow(hwnd, SW_HIDE);
-                }
+                _ => {}
             }
         }
     }
 
     unsafe fn draw_tray_menu_item(&self, draw: &DrawItemStruct) {
-        let selected = draw.item_state & OWNER_DRAW_SELECTED != 0;
-        let background = if selected {
-            theme::SURFACE_RAISED
-        } else {
-            theme::SURFACE
-        };
-        let brush = unsafe { CreateSolidBrush(background) };
+        let surface_brush = unsafe { CreateSolidBrush(theme::SURFACE) };
 
         unsafe {
-            FillRect(draw.device_context, &draw.item_rect, brush);
-            DeleteObject(brush);
+            FillRect(draw.device_context, &draw.item_rect, surface_brush);
+            DeleteObject(surface_brush);
+        }
+
+        if draw.item_state & OWNER_DRAW_SELECTED != 0 {
+            let highlight = RECT {
+                left: draw.item_rect.left + 4,
+                top: draw.item_rect.top + 3,
+                right: draw.item_rect.right - 4,
+                bottom: draw.item_rect.bottom - 3,
+            };
+            let brush = unsafe { CreateSolidBrush(theme::SURFACE_RAISED) };
+            let pen = unsafe { CreatePen(0, 1, theme::LINE_STRONG) };
+            let previous_brush = unsafe { SelectObject(draw.device_context, brush) };
+            let previous_pen = unsafe { SelectObject(draw.device_context, pen) };
+
+            unsafe {
+                RoundRect(
+                    draw.device_context,
+                    highlight.left,
+                    highlight.top,
+                    highlight.right,
+                    highlight.bottom,
+                    22,
+                    22,
+                );
+                SelectObject(draw.device_context, previous_pen);
+                SelectObject(draw.device_context, previous_brush);
+                DeleteObject(pen);
+                DeleteObject(brush);
+            }
+        }
+
+        unsafe {
             SetBkMode(draw.device_context, TRANSPARENT as i32);
             SelectObject(draw.device_context, self.ui_font);
         }
 
         let (label, color) = match draw.item_id as usize {
-            MENU_OPEN => ("Открыть Mnemos Collector", theme::TEXT),
+            MENU_OPEN => ("Открыть", theme::TEXT),
             MENU_EXIT => ("Выйти", theme::DANGER),
             _ => return,
         };
@@ -623,8 +640,8 @@ impl DesktopWindow {
                 mascot::draw(
                     draw.device_context,
                     draw.item_rect.left + 10,
-                    draw.item_rect.top + 6,
-                    30,
+                    draw.item_rect.top + 7,
+                    24,
                 );
             }
         } else {
@@ -635,7 +652,7 @@ impl DesktopWindow {
                 TextOutW(
                     draw.device_context,
                     draw.item_rect.left + 18,
-                    draw.item_rect.top + 11,
+                    draw.item_rect.top + 10,
                     close.as_ptr(),
                     1,
                 );
@@ -648,8 +665,8 @@ impl DesktopWindow {
             SetTextColor(draw.device_context, color);
             TextOutW(
                 draw.device_context,
-                draw.item_rect.left + 50,
-                draw.item_rect.top + 12,
+                draw.item_rect.left + 44,
+                draw.item_rect.top + 9,
                 label.as_ptr(),
                 label.len().saturating_sub(1) as i32,
             );
@@ -997,6 +1014,7 @@ fn apply_window_chrome(hwnd: HWND) {
     let dark_mode: i32 = 1;
     let caption_color = theme::BACKGROUND_DEEP;
     let border_color = theme::LINE;
+    let corner_preference = DWM_WINDOW_CORNER_PREFERENCE_ROUND;
 
     unsafe {
         let _ = DwmSetWindowAttribute(
@@ -1015,6 +1033,12 @@ fn apply_window_chrome(hwnd: HWND) {
             hwnd,
             DWMWA_BORDER_COLOR as u32,
             (&border_color as *const u32).cast::<c_void>(),
+            std::mem::size_of::<u32>() as u32,
+        );
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWM_WINDOW_CORNER_PREFERENCE_ATTRIBUTE,
+            (&corner_preference as *const u32).cast::<c_void>(),
             std::mem::size_of::<u32>() as u32,
         );
     }
