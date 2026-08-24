@@ -508,13 +508,7 @@ unsafe fn draw_pill(hdc: *mut c_void, rect: UiRect, fill: u32, border: u32) {
     }
 }
 
-unsafe fn draw_rounded_rect(
-    hdc: *mut c_void,
-    rect: UiRect,
-    fill: u32,
-    border: u32,
-    radius: i32,
-) {
+unsafe fn draw_rounded_rect(hdc: *mut c_void, rect: UiRect, fill: u32, border: u32, radius: i32) {
     let brush = unsafe { CreateSolidBrush(fill) };
     let pen = unsafe { CreatePen(0, 1, border) };
     let previous_brush = unsafe { SelectObject(hdc, brush) };
