@@ -1,3 +1,4 @@
+mod dpi;
 mod mascot;
 mod native_shell;
 mod theme;
@@ -13,9 +14,11 @@ pub struct DesktopLaunchContext {
 }
 
 pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
+    dpi::enable_gdi_scaling_for_thread();
     native_shell::run(context, runtime)
 }
 
 pub fn show_fatal_error(message: &str) {
+    dpi::enable_gdi_scaling_for_thread();
     native_shell::show_fatal_error(message);
 }
