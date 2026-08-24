@@ -56,7 +56,9 @@ pub(super) struct Layout {
     pub window_close: UiRect,
     pub hero: UiRect,
     pub activation: Option<UiRect>,
+    pub token_field: UiRect,
     pub token_edit: UiRect,
+    pub device_field: UiRect,
     pub device_edit: UiRect,
     pub activate_button: UiRect,
     pub logs_card: UiRect,
@@ -151,20 +153,24 @@ pub(super) fn layout(width: i32, height: i32, provisioned: bool) -> Layout {
     let gap = 10;
     let token_width = (inner_width - device_width - button_width - gap * 2).max(210);
 
-    let token_edit = UiRect {
+    let token_field = UiRect {
         left: activation_rect.left + 18,
         top: edit_top,
         right: activation_rect.left + 18 + token_width,
         bottom: edit_top + 34,
     };
-    let device_edit = UiRect {
-        left: token_edit.right + gap,
+    let token_edit = token_field.inset(10, 5);
+
+    let device_field = UiRect {
+        left: token_field.right + gap,
         top: edit_top,
-        right: token_edit.right + gap + device_width,
+        right: token_field.right + gap + device_width,
         bottom: edit_top + 34,
     };
+    let device_edit = device_field.inset(10, 5);
+
     let activate_button = UiRect {
-        left: device_edit.right + gap,
+        left: device_field.right + gap,
         top: edit_top,
         right: activation_rect.right - 18,
         bottom: edit_top + 34,
@@ -195,7 +201,9 @@ pub(super) fn layout(width: i32, height: i32, provisioned: bool) -> Layout {
         window_close,
         hero,
         activation,
+        token_field,
         token_edit,
+        device_field,
         device_edit,
         activate_button,
         logs_card,
@@ -566,7 +574,7 @@ unsafe fn draw_activation(
             UiRect {
                 left: activation.left + 18,
                 top: activation.top + 46,
-                right: layout.token_edit.right,
+                right: layout.token_field.right,
                 bottom: activation.top + 65,
             },
             "Код активации",
@@ -576,15 +584,18 @@ unsafe fn draw_activation(
         draw_text_clipped(
             hdc,
             UiRect {
-                left: layout.device_edit.left,
+                left: layout.device_field.left,
                 top: activation.top + 46,
-                right: layout.device_edit.right,
+                right: layout.device_field.right,
                 bottom: activation.top + 65,
             },
             "Устройство",
             fonts.ui,
             theme::TEXT_MUTED,
         );
+
+        draw_input_field(hdc, layout.token_field);
+        draw_input_field(hdc, layout.device_field);
 
         draw_primary_button(
             hdc,
@@ -857,6 +868,12 @@ unsafe fn draw_toggle(
     }
 }
 
+unsafe fn draw_input_field(hdc: *mut c_void, rect: UiRect) {
+    unsafe {
+        draw_pill(hdc, rect, theme::SURFACE_RAISED, theme::LINE_STRONG);
+    }
+}
+
 unsafe fn draw_primary_button(
     hdc: *mut c_void,
     rect: UiRect,
@@ -1100,5 +1117,50 @@ pub(super) unsafe fn fill_background(hdc: *mut c_void, client: &RECT) {
         FillRect(hdc, client, background);
         DeleteObject(background);
         SetBkMode(hdc, 1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::layout;
+
+    #[test]
+    fn activation_layout_keeps_controls_separated_at_minimum_size() {
+        let layout = layout(760, 610, false);
+        let activation = layout.activation.expect("activation panel should exist");
+
+        assert!(layout.token_field.right < layout.device_field.left);
+        assert!(layout.device_field.right < layout.activate_button.left);
+        assert!(
+            layout
+                .token_field
+                .contains(layout.token_edit.left, layout.token_edit.top)
+        );
+        assert!(
+            layout
+                .token_field
+                .contains(layout.token_edit.right, layout.token_edit.bottom)
+        );
+        assert!(
+            layout
+                .device_field
+                .contains(layout.device_edit.left, layout.device_edit.top)
+        );
+        assert!(
+            layout
+                .device_field
+                .contains(layout.device_edit.right, layout.device_edit.bottom)
+        );
+        assert!(activation.bottom < layout.logs_card.top);
+        assert_eq!(layout.logs_card.bottom, 588);
+    }
+
+    #[test]
+    fn provisioned_layout_keeps_journal_inside_minimum_height() {
+        let layout = layout(760, 460, true);
+
+        assert!(layout.activation.is_none());
+        assert_eq!(layout.logs_card.bottom, 438);
+        assert_eq!(layout.logs_card.bottom + 22, 460);
     }
 }
