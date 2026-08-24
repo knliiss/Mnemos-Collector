@@ -1,5 +1,5 @@
 use std::collections::{BTreeSet, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use sysinfo::{Pid, Process, ProcessesToUpdate, System};
 
