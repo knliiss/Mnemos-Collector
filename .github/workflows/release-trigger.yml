@@ -1,0 +1,80 @@
+name: Release Trigger
+
+on:
+  push:
+    branches:
+      - "release/v*"
+
+concurrency:
+  group: collector-release-trigger
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  tag-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate release branch
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          branch="$GITHUB_REF_NAME"
+
+          if [[ ! "$branch" =~ ^release/v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Release branch must use release/vMAJOR.MINOR.PATCH format."
+            exit 1
+          fi
+
+          tag="${branch#release/}"
+          version="${tag#v}"
+          cargo_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)"
+
+          git fetch origin main --no-tags
+          main_sha="$(git rev-parse origin/main)"
+
+          if [ "$GITHUB_SHA" != "$main_sha" ]; then
+            echo "Release branch must point exactly to the current main HEAD."
+            echo "release branch: $GITHUB_SHA"
+            echo "main:           $main_sha"
+            exit 1
+          fi
+
+          if [ "$version" != "$cargo_version" ]; then
+            echo "Release branch version $version does not match Cargo.toml version $cargo_version."
+            exit 1
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null 2>&1; then
+            echo "Release tag $tag already exists."
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Create release tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          git tag "$RELEASE_TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$RELEASE_TAG"
+
+      - name: Remove release trigger branch
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin --delete "$GITHUB_REF_NAME"
