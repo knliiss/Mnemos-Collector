@@ -9,6 +9,10 @@ const MAX_PARENT_DEPTH: usize = 5;
 pub struct CristalixProcessSnapshot {
     pub running: bool,
     pub latest_log_candidates: Vec<PathBuf>,
+    pub java_processes: usize,
+    pub launcher_processes: usize,
+    pub direct_matches: usize,
+    pub ancestry_matches: usize,
 }
 
 #[derive(Debug)]
@@ -31,19 +35,49 @@ impl CristalixProcessDetector {
         let launcher_pids = cristalix_launcher_pids(&self.system);
         let mut running = false;
         let mut candidates = BTreeSet::new();
+        let mut java_processes = 0;
+        let mut direct_matches = 0;
+        let mut ancestry_matches = 0;
 
         for (pid, process) in self.system.processes() {
-            if !is_cristalix_game_process(*pid, process, &self.system, &launcher_pids) {
+            let name = process.name().to_string_lossy().to_ascii_lowercase();
+
+            if !is_java_process_name(&name) {
+                continue;
+            }
+
+            java_processes += 1;
+
+            let locations = process_locations(process);
+            let direct_match = locations
+                .iter()
+                .any(|location| references_cristalix_game(location));
+            let ancestry_match =
+                descends_from_cristalix_launcher(*pid, &self.system, &launcher_pids);
+
+            if direct_match {
+                direct_matches += 1;
+            }
+
+            if ancestry_match {
+                ancestry_matches += 1;
+            }
+
+            if !direct_match && !ancestry_match {
                 continue;
             }
 
             running = true;
-            collect_log_candidates(process, &mut candidates);
+            collect_log_candidates(&locations, &mut candidates);
         }
 
         CristalixProcessSnapshot {
             running,
             latest_log_candidates: candidates.into_iter().collect(),
+            java_processes,
+            launcher_processes: launcher_pids.len(),
+            direct_matches,
+            ancestry_matches,
         }
     }
 
@@ -66,25 +100,6 @@ fn cristalix_launcher_pids(system: &System) -> HashSet<Pid> {
             }
         })
         .collect()
-}
-
-fn is_cristalix_game_process(
-    pid: Pid,
-    process: &Process,
-    system: &System,
-    launcher_pids: &HashSet<Pid>,
-) -> bool {
-    let name = process.name().to_string_lossy().to_ascii_lowercase();
-    let java_process = is_java_process_name(&name);
-    let direct_evidence = process_locations(process)
-        .iter()
-        .any(|location| references_cristalix_game(location));
-
-    if java_process && direct_evidence {
-        return true;
-    }
-
-    java_process && descends_from_cristalix_launcher(pid, system, launcher_pids)
 }
 
 fn is_java_process_name(name: &str) -> bool {
@@ -143,9 +158,9 @@ fn references_cristalix_game(value: &str) -> bool {
             || normalized.contains("minigames"))
 }
 
-fn collect_log_candidates(process: &Process, candidates: &mut BTreeSet<PathBuf>) {
-    for location in process_locations(process) {
-        if let Some(path) = latest_log_from_location(&location) {
+fn collect_log_candidates(locations: &[String], candidates: &mut BTreeSet<PathBuf>) {
+    for location in locations {
+        if let Some(path) = latest_log_from_location(location) {
             candidates.insert(path);
         }
     }
