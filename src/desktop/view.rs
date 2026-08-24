@@ -17,6 +17,12 @@ const LOG_CHAR_WIDTH: i32 = 8;
 const CONTENT_MARGIN: i32 = 22;
 const HEADER_HEIGHT: i32 = 68;
 const CARD_RADIUS: i32 = 24;
+const DEBUG_TOGGLE_WIDTH: i32 = 154;
+const STATUS_TILE_HEIGHT: i32 = 46;
+const STATUS_TILE_BOTTOM_MARGIN: i32 = 12;
+const STATUS_LABEL_TOP_PADDING: i32 = 3;
+const STATUS_LABEL_HEIGHT: i32 = 20;
+const STATUS_VALUE_BOTTOM_PADDING: i32 = 2;
 
 #[derive(Clone, Copy)]
 pub(super) struct UiRect {
@@ -183,10 +189,10 @@ pub(super) fn layout(width: i32, height: i32, provisioned: bool) -> Layout {
         bottom: (height - CONTENT_MARGIN).max(logs_top + 190),
     };
     let debug_toggle = UiRect {
-        left: logs_card.right - 136,
+        left: logs_card.right - 14 - DEBUG_TOGGLE_WIDTH,
         top: logs_card.top + 13,
         right: logs_card.right - 14,
-        bottom: logs_card.top + 41,
+        bottom: logs_card.top + 43,
     };
     let logs_view = UiRect {
         left: logs_card.left + 14,
@@ -389,8 +395,8 @@ unsafe fn draw_status_tiles(
     let right = rect.right - 20;
     let available = right - left;
     let tile_width = (available - gap * 2) / 3;
-    let top = rect.bottom - 50;
-    let bottom = rect.bottom - 12;
+    let bottom = rect.bottom - STATUS_TILE_BOTTOM_MARGIN;
+    let top = bottom - STATUS_TILE_HEIGHT;
 
     let game = UiRect {
         left,
@@ -473,25 +479,34 @@ unsafe fn draw_status_tile(
     status_color: u32,
     fonts: Fonts,
 ) {
-    let label_rect = UiRect {
-        left: rect.left + 24,
-        top: rect.top + 4,
-        right: rect.right - 10,
-        bottom: rect.top + 20,
-    };
-    let value_rect = UiRect {
-        left: rect.left + 12,
-        top: rect.top + 19,
-        right: rect.right - 10,
-        bottom: rect.bottom - 3,
-    };
+    let (label_rect, value_rect) = status_tile_text_rects(rect);
 
     unsafe {
         draw_card_with_radius(hdc, rect, theme::SURFACE_RAISED, theme::LINE, 18);
         draw_dot(hdc, rect.left + 11, rect.top + 10, status_color);
-        draw_text_clipped(hdc, label_rect, label, fonts.ui, theme::TEXT_MUTED);
-        draw_text_emphasis(hdc, value_rect, value, fonts.ui, theme::TEXT);
+        draw_text_centered_vertically(hdc, label_rect, label, fonts.ui, theme::TEXT_MUTED);
+        draw_text_centered_vertically(hdc, value_rect, value, fonts.ui, theme::TEXT);
     }
+}
+
+fn status_tile_text_rects(rect: UiRect) -> (UiRect, UiRect) {
+    let label_top = rect.top + STATUS_LABEL_TOP_PADDING;
+    let label_bottom = label_top + STATUS_LABEL_HEIGHT;
+
+    let label = UiRect {
+        left: rect.left + 24,
+        top: label_top,
+        right: rect.right - 10,
+        bottom: label_bottom,
+    };
+    let value = UiRect {
+        left: rect.left + 12,
+        top: label_bottom,
+        right: rect.right - 10,
+        bottom: rect.bottom - STATUS_VALUE_BOTTOM_PADDING,
+    };
+
+    (label, value)
 }
 
 fn status_copy(runtime: &RuntimeSnapshot) -> (&'static str, &'static str, u32) {
@@ -1122,7 +1137,7 @@ pub(super) unsafe fn fill_background(hdc: *mut c_void, client: &RECT) {
 
 #[cfg(test)]
 mod tests {
-    use super::layout;
+    use super::{DEBUG_TOGGLE_WIDTH, STATUS_TILE_HEIGHT, UiRect, layout, status_tile_text_rects};
 
     #[test]
     fn activation_layout_keeps_controls_separated_at_minimum_size() {
@@ -1162,5 +1177,30 @@ mod tests {
         assert!(layout.activation.is_none());
         assert_eq!(layout.logs_card.bottom, 438);
         assert_eq!(layout.logs_card.bottom + 22, 460);
+    }
+
+    #[test]
+    fn diagnostics_toggle_keeps_full_label_space() {
+        let layout = layout(760, 460, true);
+
+        assert_eq!(layout.debug_toggle.width(), DEBUG_TOGGLE_WIDTH);
+        assert_eq!(layout.debug_toggle.height(), 30);
+    }
+
+    #[test]
+    fn status_tile_text_rows_have_safe_vertical_space() {
+        let tile = UiRect {
+            left: 0,
+            top: 0,
+            right: 240,
+            bottom: STATUS_TILE_HEIGHT,
+        };
+
+        let (label, value) = status_tile_text_rects(tile);
+
+        assert_eq!(label.height(), 20);
+        assert_eq!(value.height(), 21);
+        assert_eq!(label.bottom, value.top);
+        assert!(value.bottom < tile.bottom);
     }
 }
