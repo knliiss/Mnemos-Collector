@@ -14,21 +14,23 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowW, GWLP_USERDATA,
     GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, RegisterClassW,
-    SM_CXSCREEN, SM_CYSCREEN, SW_RESTORE, SW_SHOWNOACTIVATE, SetForegroundWindow,
+    SM_CXSCREEN, SM_CYSCREEN, SW_RESTORE, SW_SHOWNOACTIVATE, SetCursor, SetForegroundWindow,
     SetWindowLongPtrW, ShowWindow, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCCREATE,
-    WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WNDCLASSW, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use super::mascot;
 use super::theme;
 
 const CLASS_NAME: &str = "MnemosCollectorTrayPopup";
-const WIDTH: i32 = 154;
-const HEIGHT: i32 = 82;
-const MARGIN: i32 = 7;
-const ITEM_HEIGHT: i32 = 31;
+const WIDTH: i32 = 144;
+const HEIGHT: i32 = 74;
+const MARGIN: i32 = 6;
+const ITEM_HEIGHT: i32 = 29;
 const ITEM_GAP: i32 = 4;
+const POPUP_RADIUS: i32 = 24;
+const ITEM_RADIUS: i32 = 17;
 
 struct TrayPopupState {
     owner: HWND,
@@ -110,7 +112,14 @@ pub(super) fn show(owner: HWND, font: *mut c_void) -> Result<()> {
             return Err(io::Error::last_os_error()).context("failed to create tray popup");
         }
 
-        let region = CreateRoundRectRgn(0, 0, WIDTH + 1, HEIGHT + 1, 22, 22);
+        let region = CreateRoundRectRgn(
+            0,
+            0,
+            WIDTH + 1,
+            HEIGHT + 1,
+            POPUP_RADIUS,
+            POPUP_RADIUS,
+        );
 
         if !region.is_null() {
             SetWindowRgn(popup, region, 1);
@@ -119,6 +128,10 @@ pub(super) fn show(owner: HWND, font: *mut c_void) -> Result<()> {
         ShowWindow(popup, SW_SHOWNOACTIVATE);
         UpdateWindow(popup);
         SetCapture(popup);
+
+        if !cursor.is_null() {
+            SetCursor(cursor);
+        }
     }
 
     Ok(())
@@ -149,6 +162,17 @@ unsafe extern "system" fn window_proc(
             return 0;
         }
         WM_ERASEBKGND => return 1,
+        WM_SETCURSOR => {
+            unsafe {
+                let cursor = LoadCursorW(null_mut(), IDC_ARROW);
+
+                if !cursor.is_null() {
+                    SetCursor(cursor);
+                }
+            }
+
+            return 1;
+        }
         WM_MOUSEMOVE if !state.is_null() => {
             let x = low_word(lparam as usize) as i16 as i32;
             let y = high_word(lparam as usize) as i16 as i32;
@@ -248,8 +272,8 @@ unsafe fn draw_popup_border(hdc: *mut c_void, rect: RECT) {
             rect.top,
             rect.right - 1,
             rect.bottom - 1,
-            22,
-            22,
+            POPUP_RADIUS,
+            POPUP_RADIUS,
         );
         SelectObject(hdc, previous_pen);
         SelectObject(hdc, previous_brush);
@@ -269,7 +293,7 @@ unsafe fn draw_item(
         let fill = if item == TrayItem::Exit {
             theme::DANGER_DIM
         } else {
-            theme::ACCENT_DIM
+            theme::SURFACE_RAISED
         };
         let border = if item == TrayItem::Exit {
             theme::DANGER
@@ -282,7 +306,15 @@ unsafe fn draw_item(
         let previous_pen = unsafe { SelectObject(hdc, pen) };
 
         unsafe {
-            RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, 18, 18);
+            RoundRect(
+                hdc,
+                rect.left,
+                rect.top,
+                rect.right,
+                rect.bottom,
+                ITEM_RADIUS,
+                ITEM_RADIUS,
+            );
             SelectObject(hdc, previous_pen);
             SelectObject(hdc, previous_brush);
             DeleteObject(pen);
@@ -297,12 +329,12 @@ unsafe fn draw_item(
 
     match item {
         TrayItem::Open => unsafe {
-            mascot::draw(hdc, rect.left + 7, rect.top + 5, 20);
-            draw_text(hdc, rect.left + 34, rect.top + 6, "Открыть", theme::TEXT);
+            mascot::draw(hdc, rect.left + 7, rect.top + 5, 18);
+            draw_text(hdc, rect.left + 31, rect.top + 5, "Открыть", theme::TEXT);
         },
         TrayItem::Exit => unsafe {
-            draw_text(hdc, rect.left + 11, rect.top + 5, "×", theme::DANGER);
-            draw_text(hdc, rect.left + 34, rect.top + 6, "Выйти", theme::DANGER);
+            draw_text(hdc, rect.left + 10, rect.top + 4, "×", theme::DANGER);
+            draw_text(hdc, rect.left + 31, rect.top + 5, "Выйти", theme::DANGER);
         },
     }
 }
