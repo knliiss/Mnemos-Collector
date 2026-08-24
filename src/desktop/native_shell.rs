@@ -46,8 +46,10 @@ const CLASS_NAME: &str = "MnemosCollectorShell";
 const WINDOW_TITLE: &str = "Mnemos Collector";
 const TIMER_REFRESH: usize = 1;
 const REFRESH_INTERVAL_MS: u32 = 750;
+const EM_GETSEL_MESSAGE: u32 = 0x00B0;
 const EM_SETSEL_MESSAGE: u32 = 0x00B1;
 const EM_SCROLLCARET_MESSAGE: u32 = 0x00B7;
+const EM_REPLACESEL_MESSAGE: u32 = 0x00C2;
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_ACTIVATION_RESULT: u32 = WM_APP + 2;
 const WM_COLLECTOR_STOPPED: u32 = WM_APP + 3;
@@ -398,16 +400,42 @@ impl DesktopWindow {
             return;
         }
 
-        let follow_tail = unsafe { GetFocus() != self.logs_edit };
-        self.last_log_text = text.clone();
-        let text = wide(&text);
+        let focused = unsafe { GetFocus() == self.logs_edit };
+        let selection = if focused {
+            Some(unsafe { edit_selection(self.logs_edit) })
+        } else {
+            None
+        };
+
+        if let Some(appended) = text.strip_prefix(&self.last_log_text) {
+            if !appended.is_empty() {
+                let appended = wide(appended);
+
+                unsafe {
+                    select_log_end(self.logs_edit);
+                    SendMessageW(
+                        self.logs_edit,
+                        EM_REPLACESEL_MESSAGE,
+                        0,
+                        appended.as_ptr() as isize,
+                    );
+                }
+            }
+        } else {
+            let wide_text = wide(&text);
+
+            unsafe {
+                SetWindowTextW(self.logs_edit, wide_text.as_ptr());
+            }
+        }
+
+        self.last_log_text = text;
 
         unsafe {
-            SetWindowTextW(self.logs_edit, text.as_ptr());
-
-            if follow_tail {
-                let length = GetWindowTextLengthW(self.logs_edit).max(0) as usize;
-                SendMessageW(self.logs_edit, EM_SETSEL_MESSAGE, length, length as isize);
+            if let Some((start, end)) = selection {
+                SendMessageW(self.logs_edit, EM_SETSEL_MESSAGE, start, end);
+            } else {
+                select_log_end(self.logs_edit);
                 SendMessageW(self.logs_edit, EM_SCROLLCARET_MESSAGE, 0, 0);
             }
         }
@@ -791,6 +819,30 @@ unsafe fn create_log_edit(hwnd: HWND, instance: *mut c_void, font: *mut c_void) 
 unsafe fn move_control(hwnd: HWND, rect: view::UiRect) {
     unsafe {
         MoveWindow(hwnd, rect.left, rect.top, rect.width(), rect.height(), 1);
+    }
+}
+
+unsafe fn edit_selection(hwnd: HWND) -> (usize, isize) {
+    let mut start = 0_u32;
+    let mut end = 0_u32;
+
+    unsafe {
+        SendMessageW(
+            hwnd,
+            EM_GETSEL_MESSAGE,
+            (&mut start as *mut u32) as usize,
+            (&mut end as *mut u32) as isize,
+        );
+    }
+
+    (start as usize, end as isize)
+}
+
+unsafe fn select_log_end(hwnd: HWND) {
+    let length = unsafe { GetWindowTextLengthW(hwnd) }.max(0) as usize;
+
+    unsafe {
+        SendMessageW(hwnd, EM_SETSEL_MESSAGE, length, length as isize);
     }
 }
 
