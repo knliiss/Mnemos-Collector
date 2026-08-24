@@ -28,11 +28,7 @@ mod tests {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let modified = now - Duration::from_secs(45);
 
-        assert!(timestamp_is_recent(
-            modified,
-            now,
-            Duration::from_secs(60)
-        ));
+        assert!(timestamp_is_recent(modified, now, Duration::from_secs(60)));
     }
 
     #[test]
@@ -40,11 +36,7 @@ mod tests {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let modified = now - Duration::from_secs(61);
 
-        assert!(!timestamp_is_recent(
-            modified,
-            now,
-            Duration::from_secs(60)
-        ));
+        assert!(!timestamp_is_recent(modified, now, Duration::from_secs(60)));
     }
 
     #[test]
@@ -52,10 +44,6 @@ mod tests {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let modified = now + Duration::from_secs(5);
 
-        assert!(timestamp_is_recent(
-            modified,
-            now,
-            Duration::from_secs(60)
-        ));
+        assert!(timestamp_is_recent(modified, now, Duration::from_secs(60)));
     }
 }
