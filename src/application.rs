@@ -8,7 +8,7 @@ use tokio::time::{MissedTickBehavior, interval};
 
 use crate::cristalix::{
     CristalixProcessDetector, CristalixProcessSnapshot, LogTailer, default_latest_log_path,
-    discover_latest_log, scan_existing_log_lines,
+    discover_latest_log, log_updated_within, scan_existing_log_lines,
 };
 use crate::diagnostics;
 use crate::parser::{EventDeduplicator, GameMode, LogParser};
@@ -19,6 +19,7 @@ use crate::spool::{PendingReport, ReportSpool};
 use crate::update::{UpdateCoordinator, UpdateHandoff};
 
 const MAX_REPORTS_PER_TICK: usize = 16;
+const STARTUP_LOG_FRESHNESS: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub struct CollectorApplicationConfig {
@@ -48,6 +49,7 @@ pub struct CollectorApplication {
     process_log_candidates: Vec<PathBuf>,
     process_scan_logged: bool,
     log_missing_logged: bool,
+    session_confirmed: bool,
     next_process_check: Instant,
     parser: LogParser,
     deduplicator: EventDeduplicator,
@@ -95,6 +97,7 @@ impl CollectorApplication {
             process_log_candidates: Vec::new(),
             process_scan_logged: false,
             log_missing_logged: false,
+            session_confirmed: false,
             next_process_check: now,
             parser: LogParser::default(),
             deduplicator: EventDeduplicator::new(Duration::from_secs(2)),
@@ -134,16 +137,10 @@ impl CollectorApplication {
     async fn tick(&mut self) -> Result<bool> {
         self.refresh_process_state_if_due().await?;
         self.ensure_realtime_connection().await;
-
-        if !self.process_running {
-            self.pause_connection().await;
-            return Ok(self.try_apply_update().await);
-        }
-
         self.ensure_log_tailer().await?;
         self.read_log().await?;
 
-        if self.parser.mode() == GameMode::MasterSword {
+        if self.session_confirmed && self.parser.mode() == GameMode::MasterSword {
             self.observe_connection().await;
             self.deliver_pending_reports().await?;
         } else {
@@ -165,14 +162,38 @@ impl CollectorApplication {
         let snapshot = self.process_detector.inspect();
         let candidates_changed = snapshot.latest_log_candidates != self.process_log_candidates;
         let running_changed = snapshot.running != self.process_running;
+        let strong_process_stop =
+            self.process_running && !snapshot.running && snapshot.java_processes == 0;
 
         if !self.process_scan_logged || running_changed || candidates_changed {
             self.log_process_scan(&snapshot);
             self.process_scan_logged = true;
         }
 
-        diagnostics::set_cristalix_running(snapshot.running);
+        self.process_running = snapshot.running;
         self.process_log_candidates = snapshot.latest_log_candidates;
+        diagnostics::set_cristalix_running(self.process_running || self.session_confirmed);
+
+        if strong_process_stop {
+            diagnostics::info(
+                "cristalix",
+                "Previously matched Cristalix process disappeared and no java/javaw process remains",
+            );
+
+            let pending_events = self.parser.flush();
+
+            self.enqueue_events(pending_events).await?;
+            self.parser = LogParser::default();
+            self.tailer = None;
+            self.cached_log_path = None;
+            self.log_missing_logged = false;
+            self.session_confirmed = false;
+            diagnostics::set_cristalix_running(false);
+            diagnostics::set_game_mode("Unknown");
+            diagnostics::set_log_path(None);
+            self.pause_connection().await;
+            return Ok(());
+        }
 
         let tailer_points_to_running_process = self.tailer.as_ref().is_none_or(|tailer| {
             self.process_log_candidates.is_empty()
@@ -191,37 +212,28 @@ impl CollectorApplication {
             self.tailer = None;
             self.cached_log_path = None;
             self.log_missing_logged = false;
+            self.session_confirmed = false;
+            diagnostics::set_cristalix_running(self.process_running);
             diagnostics::set_game_mode("Unknown");
             diagnostics::set_log_path(None);
             self.pause_connection().await;
         }
 
-        if snapshot.running == self.process_running {
+        if !running_changed {
             return Ok(());
         }
-
-        self.process_running = snapshot.running;
 
         if snapshot.running {
-            diagnostics::info("cristalix", "Cristalix game process detected");
-            self.parser = LogParser::default();
-            self.tailer = None;
-            self.log_missing_logged = false;
-            diagnostics::set_game_mode("Unknown");
-            return Ok(());
+            diagnostics::info(
+                "cristalix",
+                "Cristalix process evidence detected; log activity remains the OBSERVING gate",
+            );
+        } else {
+            diagnostics::debug(
+                "cristalix",
+                "Process evidence disappeared; Collector keeps following latest.log because Windows process metadata is not a reliable observation gate",
+            );
         }
-
-        diagnostics::info("cristalix", "Cristalix game process is no longer running");
-
-        let pending_events = self.parser.flush();
-
-        self.enqueue_events(pending_events).await?;
-        self.parser = LogParser::default();
-        self.tailer = None;
-        self.log_missing_logged = false;
-        diagnostics::set_game_mode("Unknown");
-        diagnostics::set_log_path(None);
-        self.pause_connection().await;
 
         Ok(())
     }
@@ -229,13 +241,11 @@ impl CollectorApplication {
     fn log_process_scan(&self, snapshot: &CristalixProcessSnapshot) {
         let default_log_exists = default_latest_log_path().is_some_and(|path| path.is_file());
         let hint = if snapshot.running && snapshot.latest_log_candidates.is_empty() {
-            " Hint: game JVM matched, but no log path was derived from process metadata; default latest.log discovery will be used."
+            " Hint: process evidence matched without a derived log path; default latest.log discovery will be used."
         } else if !snapshot.running && snapshot.java_processes == 0 {
-            " Hint: no java/javaw process is visible to the Collector."
-        } else if !snapshot.running && snapshot.launcher_processes == 0 {
-            " Hint: Java is running, but neither a .cristalix/Minigames path nor a live Cristalix launcher ancestry matched."
+            " Hint: no java/javaw process is visible. latest.log is still checked independently."
         } else if !snapshot.running {
-            " Hint: Java and a Cristalix launcher are visible, but the game JVM could not be linked to Minigames yet."
+            " Hint: process metadata did not prove Cristalix. This no longer blocks latest.log recovery or live-line confirmation."
         } else {
             ""
         };
@@ -243,12 +253,13 @@ impl CollectorApplication {
         diagnostics::debug(
             "cristalix",
             format!(
-                "Process scan: running={}, java/javaw={}, launchers={}, direct matches={}, ancestry matches={}, latest.log candidates={}, default latest.log exists={}.{}",
+                "Process scan: running={}, java/javaw={}, launchers={}, direct matches={}, ancestry matches={}, session fallback matches={}, latest.log candidates={}, default latest.log exists={}.{}",
                 snapshot.running,
                 snapshot.java_processes,
                 snapshot.launcher_processes,
                 snapshot.direct_matches,
                 snapshot.ancestry_matches,
+                snapshot.session_fallback_matches,
                 snapshot.latest_log_candidates.len(),
                 default_log_exists,
                 hint,
@@ -270,7 +281,7 @@ impl CollectorApplication {
             if !self.log_missing_logged {
                 diagnostics::debug(
                     "cristalix",
-                    "Cristalix is running, but latest.log was not found in process candidates, cache, or the default ~/.cristalix/updates/Minigames/logs path. Collector will keep retrying automatically.",
+                    "latest.log was not found in process candidates, cache, or the default ~/.cristalix/updates/Minigames/logs path. Collector will keep retrying automatically.",
                 );
                 self.log_missing_logged = true;
             }
@@ -292,6 +303,8 @@ impl CollectorApplication {
                 diagnostics::set_log_path(Some(path));
             }
             Err(error) => {
+                self.session_confirmed = false;
+                diagnostics::set_cristalix_running(self.process_running);
                 diagnostics::set_log_path(None);
                 self.cached_log_path = None;
                 return Err(error).context("failed to start latest.log tailing");
@@ -314,22 +327,42 @@ impl CollectorApplication {
             })?;
 
         let mode = parser.mode();
+        let fresh_log = log_updated_within(path, STARTUP_LOG_FRESHNESS);
 
+        self.session_confirmed = fresh_log;
+        diagnostics::set_cristalix_running(self.process_running || self.session_confirmed);
         diagnostics::set_game_mode(format!("{mode:?}"));
         diagnostics::info(
             "parser",
             format!("Recovered game mode from existing latest.log: {mode:?}"),
         );
 
+        if fresh_log {
+            diagnostics::info(
+                "cristalix",
+                "latest.log was updated within the last 60 seconds; current Cristalix session is confirmed",
+            );
+        } else {
+            diagnostics::debug(
+                "cristalix",
+                "Existing latest.log is older than 60 seconds. Historical mode is restored, but OBSERVING waits for the first new complete log line.",
+            );
+        }
+
         if mode != GameMode::MasterSword {
             diagnostics::debug(
                 "parser",
-                "Hint: Collector remains PAUSED until Master Sword context is recognized. Check the selected latest.log and the most recent 'Joining server' lines in the log viewer.",
+                "Collector remains PAUSED until Master Sword context is recognized.",
+            );
+        } else if fresh_log {
+            diagnostics::debug(
+                "parser",
+                "Master Sword context and recent log activity confirm the current session; no reconnect or mode re-entry is required",
             );
         } else {
             diagnostics::debug(
                 "parser",
-                "Existing log already proves the user is in Master Sword; no reconnect or mode re-entry is required",
+                "Master Sword context was recovered from history, but the session is not live-confirmed yet. Any new complete log line will confirm it without requiring a reconnect.",
             );
         }
 
@@ -362,6 +395,8 @@ impl CollectorApplication {
                 self.tailer = None;
                 self.cached_log_path = None;
                 self.log_missing_logged = false;
+                self.session_confirmed = false;
+                diagnostics::set_cristalix_running(self.process_running);
                 diagnostics::set_game_mode("Unknown");
                 diagnostics::set_log_path(None);
                 self.pause_connection().await;
@@ -380,6 +415,7 @@ impl CollectorApplication {
                 "latest.log was replaced or truncated; rebuilding mode context without replaying historical events",
             );
             self.parser = LogParser::default();
+            self.session_confirmed = false;
 
             if let Some(path) = path {
                 self.bootstrap_parser_from_log(&path).await?;
@@ -387,6 +423,15 @@ impl CollectorApplication {
 
             self.pause_connection().await;
             return Ok(());
+        }
+
+        if !lines.is_empty() && !self.session_confirmed {
+            self.session_confirmed = true;
+            diagnostics::set_cristalix_running(true);
+            diagnostics::info(
+                "cristalix",
+                "First new complete latest.log line confirmed the live Cristalix session",
+            );
         }
 
         for line in lines {
