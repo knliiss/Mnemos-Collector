@@ -112,14 +112,7 @@ pub(super) fn show(owner: HWND, font: *mut c_void) -> Result<()> {
             return Err(io::Error::last_os_error()).context("failed to create tray popup");
         }
 
-        let region = CreateRoundRectRgn(
-            0,
-            0,
-            WIDTH + 1,
-            HEIGHT + 1,
-            POPUP_RADIUS,
-            POPUP_RADIUS,
-        );
+        let region = CreateRoundRectRgn(0, 0, WIDTH + 1, HEIGHT + 1, POPUP_RADIUS, POPUP_RADIUS);
 
         if !region.is_null() {
             SetWindowRgn(popup, region, 1);
