@@ -72,6 +72,7 @@ jobs:
   windows:
     needs: prepare
     runs-on: windows-latest
+    timeout-minutes: 25
     env:
       MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
       WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.MNEMOS_WINDOWS_CODE_SIGNING_PFX_BASE64 }}
@@ -161,6 +162,7 @@ jobs:
   linux:
     needs: prepare
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     env:
       MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
       VERSION: ${{ needs.prepare.outputs.version }}
@@ -238,167 +240,13 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  macos:
-    needs: prepare
-    runs-on: macos-latest
-    env:
-      MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
-      VERSION: ${{ needs.prepare.outputs.version }}
-      APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.MNEMOS_APPLE_DEVELOPER_ID_P12_BASE64 }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MNEMOS_APPLE_DEVELOPER_ID_P12_PASSWORD }}
-      APPLE_ID: ${{ secrets.MNEMOS_APPLE_ID }}
-      APPLE_TEAM_ID: ${{ secrets.MNEMOS_APPLE_TEAM_ID }}
-      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.MNEMOS_APPLE_APP_SPECIFIC_PASSWORD }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Require production macOS signing configuration
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          for variable_name in \
-            APPLE_CERTIFICATE_P12_BASE64 \
-            APPLE_CERTIFICATE_PASSWORD \
-            APPLE_ID \
-            APPLE_TEAM_ID \
-            APPLE_APP_SPECIFIC_PASSWORD
-          do
-            if [ -z "${!variable_name:-}" ]; then
-              echo "$variable_name is required for the production macOS release."
-              exit 1
-            fi
-          done
-
-      - name: Install packaging dependencies
-        shell: bash
-        run: brew install librsvg
-
-      - name: Install Rust targets
-        shell: bash
-        run: |
-          rustup toolchain install 1.98.0 --profile minimal
-          rustup target add x86_64-apple-darwin --toolchain 1.98.0
-          rustup target add aarch64-apple-darwin --toolchain 1.98.0
-
-      - name: Build both macOS architectures
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo +1.98.0 build \
-            --locked \
-            --release \
-            --target x86_64-apple-darwin
-          cargo +1.98.0 build \
-            --locked \
-            --release \
-            --target aarch64-apple-darwin
-
-      - name: Import Developer ID Application certificate
-        id: signing
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          certificate="$RUNNER_TEMP/mnemos-developer-id.p12"
-          keychain="$RUNNER_TEMP/mnemos-release.keychain-db"
-          keychain_password="$(openssl rand -hex 24)"
-
-          python3 - "$certificate" <<'PY'
-          import base64
-          import os
-          import sys
-
-          with open(sys.argv[1], "wb") as target:
-              target.write(base64.b64decode(os.environ["APPLE_CERTIFICATE_P12_BASE64"], validate=True))
-          PY
-
-          security create-keychain -p "$keychain_password" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$keychain_password" "$keychain"
-          security import \
-            "$certificate" \
-            -k "$keychain" \
-            -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -T /usr/bin/codesign \
-            -T /usr/bin/security
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: \
-            -s \
-            -k "$keychain_password" \
-            "$keychain"
-          security list-keychains -d user -s "$keychain"
-
-          signing_identity="$(
-            security find-identity -v -p codesigning "$keychain" \
-              | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' \
-              | head -n 1
-          )"
-
-          if [ -z "$signing_identity" ]; then
-            echo "Developer ID Application identity was not found in the imported certificate."
-            exit 1
-          fi
-
-          echo "MNEMOS_MACOS_SIGN_IDENTITY=$signing_identity" >> "$GITHUB_ENV"
-          echo "MNEMOS_MACOS_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
-          echo "MNEMOS_MACOS_CERTIFICATE=$certificate" >> "$GITHUB_ENV"
-
-      - name: Build signed and notarized Universal 2 application
-        shell: bash
-        env:
-          MNEMOS_MACOS_NOTARIZE: "1"
-        run: |
-          set -euo pipefail
-          bash scripts/package-macos.sh \
-            target/x86_64-apple-darwin/release/mnemos-collector \
-            target/aarch64-apple-darwin/release/mnemos-collector \
-            "$VERSION" \
-            dist
-
-      - name: Verify macOS artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -s dist/Mnemos-Collector-macOS-universal.dmg
-          test -s dist/mnemos-collector-update-macos-universal
-          xcrun stapler validate dist/Mnemos-Collector-macOS-universal.dmg
-
-          architectures="$(lipo -archs dist/mnemos-collector-update-macos-universal)"
-          [[ "$architectures" == *"x86_64"* ]]
-          [[ "$architectures" == *"arm64"* ]]
-
-      - name: Remove Apple signing material
-        if: always()
-        shell: bash
-        run: |
-          if [ -n "${MNEMOS_MACOS_KEYCHAIN:-}" ]; then
-            security delete-keychain "$MNEMOS_MACOS_KEYCHAIN" || true
-          fi
-
-          rm -f \
-            "${MNEMOS_MACOS_CERTIFICATE:-}" \
-            "$RUNNER_TEMP/mnemos-developer-id.p12"
-
-      - name: Upload macOS release artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: collector-release-macos
-          path: |
-            dist/Mnemos-Collector-macOS-universal.dmg
-            dist/mnemos-collector-update-macos-universal
-          if-no-files-found: error
-          retention-days: 7
-
   release:
     needs:
       - prepare
       - windows
       - linux
-      - macos
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     env:
       GH_TOKEN: ${{ github.token }}
@@ -499,17 +347,11 @@ jobs:
           sign_artifact \
             windows-x86_64 \
             Mnemos-Collector-Windows-x86_64.exe
-          sign_artifact \
-            macos-x86_64 \
-            mnemos-collector-update-macos-universal
-          sign_artifact \
-            macos-aarch64 \
-            mnemos-collector-update-macos-universal
 
           printf '%s\n' "$manifest" > dist/manifest.json
           jq -e \
             --arg version "$VERSION" \
-            '.version == $version and (.artifacts | length) == 4' \
+            '.version == $version and (.artifacts | length) == 2' \
             dist/manifest.json \
             > /dev/null
 
@@ -523,9 +365,7 @@ jobs:
               Mnemos-Collector-Windows-x86_64.exe \
               Mnemos-Collector-Linux-x86_64.AppImage \
               Mnemos-Collector-Linux-amd64.deb \
-              Mnemos-Collector-macOS-universal.dmg \
               mnemos-collector-update-linux-x86_64 \
-              mnemos-collector-update-macos-universal \
               manifest.json \
               > SHA256SUMS.txt
           )
@@ -539,9 +379,7 @@ jobs:
             dist/Mnemos-Collector-Windows-x86_64.exe
             dist/Mnemos-Collector-Linux-x86_64.AppImage
             dist/Mnemos-Collector-Linux-amd64.deb
-            dist/Mnemos-Collector-macOS-universal.dmg
             dist/mnemos-collector-update-linux-x86_64
-            dist/mnemos-collector-update-macos-universal
             dist/manifest.json
             dist/SHA256SUMS.txt
           )

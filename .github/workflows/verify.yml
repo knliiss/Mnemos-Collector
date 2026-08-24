@@ -24,7 +24,6 @@ jobs:
         os:
           - ubuntu-latest
           - windows-latest
-          - macos-latest
 
     steps:
       - name: Checkout
@@ -41,12 +40,7 @@ jobs:
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        if: matrix.os != 'macos-latest'
         run: cargo test --locked --all-targets --all-features
-
-      - name: Run macOS tests serially
-        if: matrix.os == 'macos-latest'
-        run: cargo test --locked --all-targets --all-features -- --test-threads=1
 
   release-build:
     name: release-${{ matrix.platform }}
