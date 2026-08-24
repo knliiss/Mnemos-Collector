@@ -7,7 +7,8 @@ use tokio::signal;
 use tokio::time::{MissedTickBehavior, interval};
 
 use crate::cristalix::{
-    CristalixProcessDetector, LogTailer, discover_latest_log, scan_existing_log_lines,
+    CristalixProcessDetector, CristalixProcessSnapshot, LogTailer, default_latest_log_path,
+    discover_latest_log, scan_existing_log_lines,
 };
 use crate::diagnostics;
 use crate::parser::{EventDeduplicator, GameMode, LogParser};
@@ -45,6 +46,8 @@ pub struct CollectorApplication {
     process_detector: CristalixProcessDetector,
     process_running: bool,
     process_log_candidates: Vec<PathBuf>,
+    process_scan_logged: bool,
+    log_missing_logged: bool,
     next_process_check: Instant,
     parser: LogParser,
     deduplicator: EventDeduplicator,
@@ -90,6 +93,8 @@ impl CollectorApplication {
             process_detector: CristalixProcessDetector::default(),
             process_running: false,
             process_log_candidates: Vec::new(),
+            process_scan_logged: false,
+            log_missing_logged: false,
             next_process_check: now,
             parser: LogParser::default(),
             deduplicator: EventDeduplicator::new(Duration::from_secs(2)),
@@ -161,20 +166,9 @@ impl CollectorApplication {
         let candidates_changed = snapshot.latest_log_candidates != self.process_log_candidates;
         let running_changed = snapshot.running != self.process_running;
 
-        if running_changed || candidates_changed {
-            diagnostics::debug(
-                "cristalix",
-                format!(
-                    "Process scan: running={}, latest.log candidates={}{}",
-                    snapshot.running,
-                    snapshot.latest_log_candidates.len(),
-                    if snapshot.running && snapshot.latest_log_candidates.is_empty() {
-                        ". Hint: process was found, but no log path could be derived from its command line; fallback discovery will be used"
-                    } else {
-                        ""
-                    },
-                ),
-            );
+        if !self.process_scan_logged || running_changed || candidates_changed {
+            self.log_process_scan(&snapshot);
+            self.process_scan_logged = true;
         }
 
         diagnostics::set_cristalix_running(snapshot.running);
@@ -196,6 +190,7 @@ impl CollectorApplication {
             self.parser = LogParser::default();
             self.tailer = None;
             self.cached_log_path = None;
+            self.log_missing_logged = false;
             diagnostics::set_game_mode("Unknown");
             diagnostics::set_log_path(None);
             self.pause_connection().await;
@@ -211,6 +206,7 @@ impl CollectorApplication {
             diagnostics::info("cristalix", "Cristalix game process detected");
             self.parser = LogParser::default();
             self.tailer = None;
+            self.log_missing_logged = false;
             diagnostics::set_game_mode("Unknown");
             return Ok(());
         }
@@ -222,11 +218,42 @@ impl CollectorApplication {
         self.enqueue_events(pending_events).await?;
         self.parser = LogParser::default();
         self.tailer = None;
+        self.log_missing_logged = false;
         diagnostics::set_game_mode("Unknown");
         diagnostics::set_log_path(None);
         self.pause_connection().await;
 
         Ok(())
+    }
+
+    fn log_process_scan(&self, snapshot: &CristalixProcessSnapshot) {
+        let default_log_exists = default_latest_log_path().is_some_and(|path| path.is_file());
+        let hint = if snapshot.running && snapshot.latest_log_candidates.is_empty() {
+            " Hint: game JVM matched, but no log path was derived from process metadata; default latest.log discovery will be used."
+        } else if !snapshot.running && snapshot.java_processes == 0 {
+            " Hint: no java/javaw process is visible to the Collector."
+        } else if !snapshot.running && snapshot.launcher_processes == 0 {
+            " Hint: Java is running, but neither a .cristalix/Minigames path nor a live Cristalix launcher ancestry matched."
+        } else if !snapshot.running {
+            " Hint: Java and a Cristalix launcher are visible, but the game JVM could not be linked to Minigames yet."
+        } else {
+            ""
+        };
+
+        diagnostics::debug(
+            "cristalix",
+            format!(
+                "Process scan: running={}, java/javaw={}, launchers={}, direct matches={}, ancestry matches={}, latest.log candidates={}, default latest.log exists={}.{}",
+                snapshot.running,
+                snapshot.java_processes,
+                snapshot.launcher_processes,
+                snapshot.direct_matches,
+                snapshot.ancestry_matches,
+                snapshot.latest_log_candidates.len(),
+                default_log_exists,
+                hint,
+            ),
+        );
     }
 
     async fn ensure_log_tailer(&mut self) -> Result<()> {
@@ -239,9 +266,19 @@ impl CollectorApplication {
             &self.process_log_candidates,
         ) else {
             diagnostics::set_log_path(None);
+
+            if !self.log_missing_logged {
+                diagnostics::debug(
+                    "cristalix",
+                    "Cristalix is running, but latest.log was not found in process candidates, cache, or the default ~/.cristalix/updates/Minigames/logs path. Collector will keep retrying automatically.",
+                );
+                self.log_missing_logged = true;
+            }
+
             return Ok(());
         };
 
+        self.log_missing_logged = false;
         diagnostics::debug(
             "cristalix",
             format!("Selected latest.log: {}", path.display()),
@@ -324,6 +361,7 @@ impl CollectorApplication {
                 self.parser = LogParser::default();
                 self.tailer = None;
                 self.cached_log_path = None;
+                self.log_missing_logged = false;
                 diagnostics::set_game_mode("Unknown");
                 diagnostics::set_log_path(None);
                 self.pause_connection().await;
