@@ -19,18 +19,18 @@ use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CREATESTRUCTW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DRAWITEMSTRUCT,
-    DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL,
-    ES_AUTOVSCROLL, ES_MULTILINE, ES_PASSWORD, ES_READONLY, GWLP_USERDATA, GetClientRect,
-    GetCursorPos, GetMessageW, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW,
-    LoadCursorW, MEASUREITEMSTRUCT, MENUINFO, MF_OWNERDRAW, MIM_BACKGROUND, MSG, MessageBoxW,
-    MoveWindow, ODS_SELECTED, PostMessageW, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
-    SW_HIDE, SW_RESTORE, SW_SHOW, SendMessageW, SetForegroundWindow, SetMenuInfo, SetTimer,
-    SetWindowLongPtrW, SetWindowTextW, ShowWindow, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP, WM_CLOSE, WM_CTLCOLOREDIT,
-    WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONUP, WM_MEASUREITEM,
-    WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD,
-    WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    AppendMenuW, CREATESTRUCTW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+    DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, ES_AUTOVSCROLL,
+    ES_MULTILINE, ES_PASSWORD, ES_READONLY, GWLP_USERDATA, GetClientRect, GetCursorPos, GetMessageW,
+    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW, LoadCursorW, MENUINFO,
+    MF_OWNERDRAW, MIM_BACKGROUND, MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage,
+    RegisterClassW, SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW, SendMessageW,
+    SetForegroundWindow, SetMenuInfo, SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
+    TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
+    TranslateMessage, WM_APP, WM_CLOSE, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY,
+    WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONUP, WM_MEASUREITEM, WM_NCCREATE, WM_PAINT,
+    WM_RBUTTONUP, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN,
+    WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 use zeroize::Zeroizing;
 
@@ -63,6 +63,30 @@ const MENU_OPEN: usize = 4101;
 const MENU_EXIT: usize = 4102;
 const TRAY_MENU_WIDTH: u32 = 248;
 const TRAY_MENU_ITEM_HEIGHT: u32 = 44;
+const OWNER_DRAW_SELECTED: u32 = 0x0001;
+
+#[repr(C)]
+struct MeasureItemStruct {
+    _control_type: u32,
+    _control_id: u32,
+    item_id: u32,
+    item_width: u32,
+    item_height: u32,
+    _item_data: usize,
+}
+
+#[repr(C)]
+struct DrawItemStruct {
+    _control_type: u32,
+    _control_id: u32,
+    item_id: u32,
+    _item_action: u32,
+    item_state: u32,
+    _item_window: HWND,
+    device_context: *mut c_void,
+    item_rect: RECT,
+    _item_data: usize,
+}
 
 pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
     unsafe {
@@ -572,8 +596,8 @@ impl DesktopWindow {
         }
     }
 
-    unsafe fn draw_tray_menu_item(&self, draw: &DRAWITEMSTRUCT) {
-        let selected = draw.itemState & ODS_SELECTED != 0;
+    unsafe fn draw_tray_menu_item(&self, draw: &DrawItemStruct) {
+        let selected = draw.item_state & OWNER_DRAW_SELECTED != 0;
         let background = if selected {
             theme::SURFACE_RAISED
         } else {
@@ -582,31 +606,36 @@ impl DesktopWindow {
         let brush = unsafe { CreateSolidBrush(background) };
 
         unsafe {
-            FillRect(draw.hDC, &draw.rcItem, brush);
+            FillRect(draw.device_context, &draw.item_rect, brush);
             DeleteObject(brush);
-            SetBkMode(draw.hDC, TRANSPARENT as i32);
-            SelectObject(draw.hDC, self.ui_font);
+            SetBkMode(draw.device_context, TRANSPARENT as i32);
+            SelectObject(draw.device_context, self.ui_font);
         }
 
-        let (label, color) = match draw.itemID as usize {
+        let (label, color) = match draw.item_id as usize {
             MENU_OPEN => ("Открыть Mnemos Collector", theme::TEXT),
             MENU_EXIT => ("Выйти", theme::DANGER),
             _ => return,
         };
 
-        if draw.itemID as usize == MENU_OPEN {
+        if draw.item_id as usize == MENU_OPEN {
             unsafe {
-                mascot::draw(draw.hDC, draw.rcItem.left + 10, draw.rcItem.top + 6, 30);
+                mascot::draw(
+                    draw.device_context,
+                    draw.item_rect.left + 10,
+                    draw.item_rect.top + 6,
+                    30,
+                );
             }
         } else {
             let close = wide("×");
 
             unsafe {
-                SetTextColor(draw.hDC, theme::DANGER);
+                SetTextColor(draw.device_context, theme::DANGER);
                 TextOutW(
-                    draw.hDC,
-                    draw.rcItem.left + 18,
-                    draw.rcItem.top + 11,
+                    draw.device_context,
+                    draw.item_rect.left + 18,
+                    draw.item_rect.top + 11,
                     close.as_ptr(),
                     1,
                 );
@@ -616,11 +645,11 @@ impl DesktopWindow {
         let label = wide(label);
 
         unsafe {
-            SetTextColor(draw.hDC, color);
+            SetTextColor(draw.device_context, color);
             TextOutW(
-                draw.hDC,
-                draw.rcItem.left + 50,
-                draw.rcItem.top + 12,
+                draw.device_context,
+                draw.item_rect.left + 50,
+                draw.item_rect.top + 12,
                 label.as_ptr(),
                 label.len().saturating_sub(1) as i32,
             );
@@ -726,20 +755,20 @@ unsafe extern "system" fn window_proc(
         }
         WM_MEASUREITEM => {
             if lparam != 0 {
-                let measure = unsafe { &mut *(lparam as *mut MEASUREITEMSTRUCT) };
+                let measure = unsafe { &mut *(lparam as *mut MeasureItemStruct) };
 
-                if matches!(measure.itemID as usize, MENU_OPEN | MENU_EXIT) {
-                    measure.itemWidth = TRAY_MENU_WIDTH;
-                    measure.itemHeight = TRAY_MENU_ITEM_HEIGHT;
+                if matches!(measure.item_id as usize, MENU_OPEN | MENU_EXIT) {
+                    measure.item_width = TRAY_MENU_WIDTH;
+                    measure.item_height = TRAY_MENU_ITEM_HEIGHT;
                     return 1;
                 }
             }
         }
         WM_DRAWITEM => {
             if !state.is_null() && lparam != 0 {
-                let draw = unsafe { &*(lparam as *const DRAWITEMSTRUCT) };
+                let draw = unsafe { &*(lparam as *const DrawItemStruct) };
 
-                if matches!(draw.itemID as usize, MENU_OPEN | MENU_EXIT) {
+                if matches!(draw.item_id as usize, MENU_OPEN | MENU_EXIT) {
                     unsafe {
                         (*state).draw_tray_menu_item(draw);
                     }
