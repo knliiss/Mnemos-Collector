@@ -468,12 +468,7 @@ unsafe fn draw_activation(
     }
 }
 
-unsafe fn draw_logs_panel(
-    hdc: *mut c_void,
-    layout: Layout,
-    fonts: Fonts,
-    state: &ViewState<'_>,
-) {
+unsafe fn draw_logs_panel(hdc: *mut c_void, layout: Layout, fonts: Fonts, state: &ViewState<'_>) {
     unsafe {
         draw_card(hdc, layout.logs_card, theme::SURFACE, theme::LINE);
 
@@ -671,7 +666,11 @@ unsafe fn draw_toggle(
             rect.top + 5,
             label,
             font,
-            if enabled { theme::TEXT } else { theme::TEXT_SECONDARY },
+            if enabled {
+                theme::TEXT
+            } else {
+                theme::TEXT_SECONDARY
+            },
         );
     }
 }
@@ -761,14 +760,7 @@ unsafe fn draw_card_with_radius(
     }
 }
 
-unsafe fn draw_text(
-    hdc: *mut c_void,
-    x: i32,
-    y: i32,
-    text: &str,
-    font: *mut c_void,
-    color: u32,
-) {
+unsafe fn draw_text(hdc: *mut c_void, x: i32, y: i32, text: &str, font: *mut c_void, color: u32) {
     let text = text.encode_utf16().collect::<Vec<_>>();
     let previous_font = unsafe { SelectObject(hdc, font) };
 

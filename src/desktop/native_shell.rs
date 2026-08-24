@@ -20,12 +20,12 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow,
     DispatchMessageW, ES_AUTOHSCROLL, ES_PASSWORD, GWLP_USERDATA, GetClientRect, GetMessageW,
-    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW, LoadCursorW, MSG,
-    MessageBoxW, MINMAXINFO, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
+    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW, LoadCursorW, MINMAXINFO,
+    MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
     SW_HIDE, SW_RESTORE, SW_SHOW, ScreenToClient, SendMessageW, SetForegroundWindow, SetTimer,
     SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, WM_APP, WM_CLOSE,
-    WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_LBUTTONUP, WM_MOUSEWHEEL, WM_NCCREATE,
-    WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD,
+    WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_LBUTTONUP, WM_MOUSEWHEEL,
+    WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD,
     WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
 };
 use zeroize::Zeroizing;
@@ -435,11 +435,9 @@ impl DesktopWindow {
         let limit = view::log_scroll_limit(&self.last_log_text, layout.logs_view);
 
         if delta > 0 {
-            self.log_scroll_from_bottom =
-                (self.log_scroll_from_bottom + lines).min(limit);
+            self.log_scroll_from_bottom = (self.log_scroll_from_bottom + lines).min(limit);
         } else if delta < 0 {
-            self.log_scroll_from_bottom =
-                self.log_scroll_from_bottom.saturating_sub(lines);
+            self.log_scroll_from_bottom = self.log_scroll_from_bottom.saturating_sub(lines);
         }
 
         self.invalidate(hwnd);

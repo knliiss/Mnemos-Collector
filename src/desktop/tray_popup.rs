@@ -11,8 +11,8 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowW, GetCursorPos,
-    GetSystemMetrics, GetWindowLongPtrW, GWLP_USERDATA, IDC_ARROW, LoadCursorW, RegisterClassW,
+    CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowW, GWLP_USERDATA,
+    GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, RegisterClassW,
     ReleaseCapture, SM_CXSCREEN, SM_CYSCREEN, SW_RESTORE, SW_SHOWNOACTIVATE, SetCapture,
     SetForegroundWindow, SetWindowLongPtrW, SetWindowRgn, ShowWindow, WM_ERASEBKGND,
     WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WNDCLASSW,
@@ -46,7 +46,8 @@ pub(super) fn show(owner: HWND, font: *mut c_void) -> Result<()> {
         let instance = GetModuleHandleW(null());
 
         if instance.is_null() {
-            return Err(io::Error::last_os_error()).context("failed to get tray popup module handle");
+            return Err(io::Error::last_os_error())
+                .context("failed to get tray popup module handle");
         }
 
         let class_name = wide(CLASS_NAME);
@@ -280,15 +281,7 @@ unsafe fn draw_item(
         let previous_pen = unsafe { SelectObject(hdc, pen) };
 
         unsafe {
-            RoundRect(
-                hdc,
-                rect.left,
-                rect.top,
-                rect.right,
-                rect.bottom,
-                18,
-                18,
-            );
+            RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, 18, 18);
             SelectObject(hdc, previous_pen);
             SelectObject(hdc, previous_brush);
             DeleteObject(pen);
@@ -302,18 +295,14 @@ unsafe fn draw_item(
     }
 
     match item {
-        TrayItem::Open => {
-            unsafe {
-                mascot::draw(hdc, rect.left + 7, rect.top + 5, 20);
-                draw_text(hdc, rect.left + 34, rect.top + 6, "Открыть", theme::TEXT);
-            }
-        }
-        TrayItem::Exit => {
-            unsafe {
-                draw_text(hdc, rect.left + 11, rect.top + 5, "×", theme::DANGER);
-                draw_text(hdc, rect.left + 34, rect.top + 6, "Выйти", theme::DANGER);
-            }
-        }
+        TrayItem::Open => unsafe {
+            mascot::draw(hdc, rect.left + 7, rect.top + 5, 20);
+            draw_text(hdc, rect.left + 34, rect.top + 6, "Открыть", theme::TEXT);
+        },
+        TrayItem::Exit => unsafe {
+            draw_text(hdc, rect.left + 11, rect.top + 5, "×", theme::DANGER);
+            draw_text(hdc, rect.left + 34, rect.top + 6, "Выйти", theme::DANGER);
+        },
     }
 }
 
