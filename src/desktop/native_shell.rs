@@ -22,16 +22,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DRAWITEMSTRUCT,
     DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL,
     ES_AUTOVSCROLL, ES_MULTILINE, ES_PASSWORD, ES_READONLY, GWLP_USERDATA, GetClientRect,
-    GetCursorPos, GetMessageW, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW,
-    IDC_ARROW, LoadCursorW, MEASUREITEMSTRUCT, MF_OWNERDRAW, MIM_BACKGROUND, MENUINFO, MSG,
-    MessageBoxW, MoveWindow, ODS_SELECTED, PostMessageW, PostQuitMessage, RegisterClassW,
-    SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW, SendMessageW, SetForegroundWindow, SetMenuInfo,
-    SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
-    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP, WM_CLOSE,
-    WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONUP,
-    WM_MEASUREITEM, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_SIZE, WM_TIMER,
-    WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
-    WS_VSCROLL,
+    GetCursorPos, GetMessageW, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW,
+    LoadCursorW, MEASUREITEMSTRUCT, MENUINFO, MF_OWNERDRAW, MIM_BACKGROUND, MSG, MessageBoxW,
+    MoveWindow, ODS_SELECTED, PostMessageW, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
+    SW_HIDE, SW_RESTORE, SW_SHOW, SendMessageW, SetForegroundWindow, SetMenuInfo, SetTimer,
+    SetWindowLongPtrW, SetWindowTextW, ShowWindow, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP, WM_CLOSE, WM_CTLCOLOREDIT,
+    WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONUP, WM_MEASUREITEM,
+    WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD,
+    WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 use zeroize::Zeroizing;
 
@@ -50,7 +49,6 @@ const CLASS_NAME: &str = "MnemosCollectorShell";
 const WINDOW_TITLE: &str = "Mnemos Collector";
 const TIMER_REFRESH: usize = 1;
 const REFRESH_INTERVAL_MS: u32 = 750;
-const EM_GETSEL_MESSAGE: u32 = 0x00B0;
 const EM_SETSEL_MESSAGE: u32 = 0x00B1;
 const EM_SCROLLCARET_MESSAGE: u32 = 0x00B7;
 const EM_REPLACESEL_MESSAGE: u32 = 0x00C2;
@@ -125,7 +123,12 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
         }
 
         apply_window_chrome(hwnd);
-        SendMessageW(hwnd, WM_SETICON_MESSAGE, ICON_SMALL_VALUE, app_icon as isize);
+        SendMessageW(
+            hwnd,
+            WM_SETICON_MESSAGE,
+            ICON_SMALL_VALUE,
+            app_icon as isize,
+        );
         SendMessageW(hwnd, WM_SETICON_MESSAGE, ICON_BIG_VALUE, app_icon as isize);
         (*state_ptr).initialize_controls(hwnd, instance)?;
         (*state_ptr).install_tray_icon(hwnd)?;
@@ -179,11 +182,7 @@ struct DesktopWindow {
 }
 
 impl DesktopWindow {
-    fn new(
-        context: DesktopLaunchContext,
-        runtime: Handle,
-        app_icon: *mut c_void,
-    ) -> Self {
+    fn new(context: DesktopLaunchContext, runtime: Handle, app_icon: *mut c_void) -> Self {
         Self {
             runtime,
             current_installation: context.current_installation,
