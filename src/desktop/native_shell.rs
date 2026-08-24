@@ -9,13 +9,14 @@ use windows_sys::Win32::Graphics::Dwm::{
     DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, InvalidateRect, PAINTSTRUCT,
-    ScreenToClient, SetBkColor, SetTextColor, UpdateWindow,
+    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, FrameRect, InvalidateRect,
+    PAINTSTRUCT, ScreenToClient, SetBkColor, SetTextColor, UpdateWindow,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    SetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+    EnableWindow, GetFocus, GetKeyState, SetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+    VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB,
 };
 use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
@@ -28,10 +29,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     MINMAXINFO, MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW,
     SIZE_MINIMIZED, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, SendMessageW, SetForegroundWindow,
     SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, WM_APP, WM_CLOSE,
-    WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_LBUTTONUP, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_NCCREATE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_SIZE,
-    WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP,
-    WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE,
+    WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONUP,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WM_SETFONT,
+    WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
+    WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE,
 };
 use zeroize::Zeroizing;
 
@@ -148,6 +149,10 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
         let mut message: MSG = std::mem::zeroed();
 
         while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
+            if (*state_ptr).handle_keyboard(hwnd, &message) {
+                continue;
+            }
+
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
@@ -184,6 +189,7 @@ struct DesktopWindow {
     edit_brush: *mut c_void,
     app_icon: *mut c_void,
     hovered: Option<InteractiveElement>,
+    activation_button_focused: bool,
     tracking_mouse_leave: bool,
     last_log_text: String,
     log_scroll_from_bottom: usize,
@@ -209,6 +215,7 @@ impl DesktopWindow {
             edit_brush: null_mut(),
             app_icon,
             hovered: None,
+            activation_button_focused: false,
             tracking_mouse_leave: false,
             last_log_text: String::new(),
             log_scroll_from_bottom: 0,
@@ -246,6 +253,7 @@ impl DesktopWindow {
         }
 
         self.update_control_visibility();
+        self.update_activation_controls_enabled();
         self.layout_controls(hwnd);
         self.refresh_logs(hwnd);
 
@@ -301,6 +309,91 @@ impl DesktopWindow {
         }
     }
 
+    fn handle_keyboard(&mut self, hwnd: HWND, message: &MSG) -> bool {
+        if self.provisioned || message.message != WM_KEYDOWN {
+            return false;
+        }
+
+        let key = message.wParam as u16;
+        let focus = unsafe { GetFocus() };
+
+        if key == VK_TAB {
+            if self.provisioning {
+                return true;
+            }
+
+            let reverse = unsafe { GetKeyState(VK_SHIFT as i32) } < 0;
+            self.move_activation_focus(hwnd, focus, reverse);
+            return true;
+        }
+
+        if key == VK_RETURN {
+            let can_activate = focus == self.token_edit
+                || focus == self.device_edit
+                || (focus == hwnd && self.activation_button_focused);
+
+            if can_activate {
+                self.begin_activation(hwnd);
+                return true;
+            }
+        }
+
+        if key == VK_SPACE && focus == hwnd && self.activation_button_focused {
+            self.begin_activation(hwnd);
+            return true;
+        }
+
+        false
+    }
+
+    fn move_activation_focus(&mut self, hwnd: HWND, focus: HWND, reverse: bool) {
+        if reverse {
+            if focus == self.device_edit {
+                self.focus_token(hwnd);
+            } else if focus == self.token_edit {
+                self.focus_activate_button(hwnd);
+            } else {
+                self.focus_device(hwnd);
+            }
+        } else if focus == self.token_edit {
+            self.focus_device(hwnd);
+        } else if focus == self.device_edit {
+            self.focus_activate_button(hwnd);
+        } else {
+            self.focus_token(hwnd);
+        }
+    }
+
+    fn focus_token(&mut self, hwnd: HWND) {
+        self.activation_button_focused = false;
+
+        unsafe {
+            SetFocus(self.token_edit);
+        }
+
+        self.invalidate(hwnd);
+    }
+
+    fn focus_device(&mut self, hwnd: HWND) {
+        self.activation_button_focused = false;
+
+        unsafe {
+            SetFocus(self.device_edit);
+        }
+
+        self.invalidate(hwnd);
+    }
+
+    fn focus_activate_button(&mut self, hwnd: HWND) {
+        self.activation_button_focused = true;
+
+        unsafe {
+            SetFocus(hwnd);
+        }
+
+        self.invalidate(hwnd);
+    }
+
     fn begin_activation(&mut self, hwnd: HWND) {
         if self.provisioned || self.provisioning {
             return;
@@ -311,17 +404,21 @@ impl DesktopWindow {
 
         if token.trim().is_empty() {
             self.activation_error = Some("Введите одноразовый код активации из Mnemos.".to_owned());
-            self.invalidate(hwnd);
+            self.focus_token(hwnd);
             return;
         }
 
         self.provisioning = true;
         self.activation_error = None;
+        self.hovered = None;
+        self.activation_button_focused = false;
+        self.update_activation_controls_enabled();
 
         let empty = wide("");
 
         unsafe {
             SetWindowTextW(self.token_edit, empty.as_ptr());
+            SetFocus(hwnd);
         }
 
         self.invalidate(hwnd);
@@ -378,6 +475,7 @@ impl DesktopWindow {
                 self.worker_started = true;
                 self.activation_error = None;
                 self.hovered = None;
+                self.activation_button_focused = false;
                 self.update_control_visibility();
                 self.layout_controls(hwnd);
             }
@@ -392,6 +490,9 @@ impl DesktopWindow {
                 } else {
                     self.activation_error = Some("Не удалось активировать Collector.".to_owned());
                 }
+
+                self.update_activation_controls_enabled();
+                self.focus_token(hwnd);
             }
         }
 
@@ -404,6 +505,15 @@ impl DesktopWindow {
         unsafe {
             ShowWindow(self.token_edit, visibility);
             ShowWindow(self.device_edit, visibility);
+        }
+    }
+
+    fn update_activation_controls_enabled(&self) {
+        let enabled = i32::from(!self.provisioning);
+
+        unsafe {
+            EnableWindow(self.token_edit, enabled);
+            EnableWindow(self.device_edit, enabled);
         }
     }
 
@@ -464,7 +574,11 @@ impl DesktopWindow {
 
     fn mouse_move(&mut self, hwnd: HWND, x: i32, y: i32) {
         let layout = window_layout(hwnd, self.provisioned);
-        let hovered = view::interactive_element_at(layout, self.provisioned, x, y);
+        let mut hovered = view::interactive_element_at(layout, self.provisioned, x, y);
+
+        if self.provisioning && hovered == Some(InteractiveElement::ActivateButton) {
+            hovered = None;
+        }
 
         if self.hovered != hovered {
             self.hovered = hovered;
@@ -527,7 +641,42 @@ impl DesktopWindow {
 
         unsafe {
             view::draw(hdc, &runtime, layout, fonts, state);
+            self.draw_activation_focus(hdc, hwnd, layout);
             EndPaint(hwnd, &paint);
+        }
+    }
+
+    unsafe fn draw_activation_focus(&self, hdc: *mut c_void, hwnd: HWND, layout: Layout) {
+        if self.provisioned || self.provisioning {
+            return;
+        }
+
+        let focus = unsafe { GetFocus() };
+        let focused = if focus == self.token_edit {
+            Some(layout.token_field)
+        } else if focus == self.device_edit {
+            Some(layout.device_field)
+        } else if focus == hwnd && self.activation_button_focused {
+            Some(layout.activate_button)
+        } else {
+            None
+        };
+
+        let Some(focused) = focused else {
+            return;
+        };
+
+        let brush = unsafe { CreateSolidBrush(theme::ACCENT) };
+        let rect = RECT {
+            left: focused.left - 1,
+            top: focused.top - 1,
+            right: focused.right + 1,
+            bottom: focused.bottom + 1,
+        };
+
+        unsafe {
+            FrameRect(hdc, &rect, brush);
+            DeleteObject(brush);
         }
     }
 
@@ -545,10 +694,16 @@ impl DesktopWindow {
                 diagnostics::set_debug_enabled(!diagnostics::debug_enabled());
                 self.invalidate(hwnd);
             }
-            Some(InteractiveElement::ActivateButton) => {
+            Some(InteractiveElement::ActivateButton) if !self.provisioning => {
+                self.activation_button_focused = true;
+
+                unsafe {
+                    SetFocus(hwnd);
+                }
+
                 self.begin_activation(hwnd);
             }
-            None => {}
+            Some(InteractiveElement::ActivateButton) | None => {}
         }
     }
 
