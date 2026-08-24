@@ -1,9 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use anyhow::{Context, Result, bail};
-#[cfg(not(target_os = "windows"))]
-use mnemos_collector::application::CollectorApplication;
-#[cfg(target_os = "windows")]
 use mnemos_collector::desktop::{self, DesktopLaunchContext};
 use mnemos_collector::diagnostics;
 use mnemos_collector::launch::LaunchArguments;
@@ -34,6 +31,9 @@ async fn main() {
         if !internal_update {
             desktop::show_fatal_error(&message);
         }
+
+        #[cfg(not(target_os = "windows"))]
+        desktop::show_fatal_error(&message);
 
         std::process::exit(1);
     }
@@ -109,33 +109,17 @@ async fn run() -> Result<()> {
         return Ok(());
     }
 
-    #[cfg(target_os = "windows")]
-    {
-        if access_key.is_some() {
-            prepare_provisioned_startup(&arguments)?;
-        }
-
-        desktop::run(
-            DesktopLaunchContext {
-                current_installation,
-                access_key,
-            },
-            tokio::runtime::Handle::current(),
-        )
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let access_key = access_key.context(
-            "collector is not provisioned; run the installer with --install --activation-token <TOKEN>",
-        )?;
-
+    if access_key.is_some() {
         prepare_provisioned_startup(&arguments)?;
-
-        let application = CollectorApplication::new(access_key).await?;
-
-        application.run().await
     }
+
+    desktop::run(
+        DesktopLaunchContext {
+            current_installation,
+            access_key,
+        },
+        tokio::runtime::Handle::current(),
+    )
 }
 
 fn prepare_provisioned_startup(arguments: &LaunchArguments) -> Result<()> {

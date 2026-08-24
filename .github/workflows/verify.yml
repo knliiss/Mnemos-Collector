@@ -6,6 +6,10 @@ on:
       - main
   pull_request:
 
+concurrency:
+  group: collector-verify-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -13,6 +17,7 @@ jobs:
   verify:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -36,7 +41,12 @@ jobs:
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Run tests
+        if: matrix.os != 'macos-latest'
         run: cargo test --locked --all-targets --all-features
+
+      - name: Run macOS tests serially
+        if: matrix.os == 'macos-latest'
+        run: cargo test --locked --all-targets --all-features -- --test-threads=1
 
   release-build:
     name: release-${{ matrix.platform }}
@@ -54,18 +64,9 @@ jobs:
             platform: windows-x86_64
             binary: mnemos-collector.exe
             installer_package: exe
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            platform: macos-x86_64
-            binary: mnemos-collector
-            installer_package: tar
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            platform: macos-aarch64
-            binary: mnemos-collector
-            installer_package: tar
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -123,6 +124,7 @@ jobs:
   release-signing-contract:
     name: release-signing-contract
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Verify Ed25519 release signing commands
@@ -186,6 +188,7 @@ jobs:
     name: production-signing-config
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     env:
       UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
