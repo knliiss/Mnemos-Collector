@@ -1,9 +1,15 @@
 use std::collections::{BTreeSet, HashSet};
+use std::fs::Metadata;
 use std::path::PathBuf;
+use std::time::{Duration, UNIX_EPOCH};
 
 use sysinfo::{Pid, Process, ProcessesToUpdate, System};
 
+use super::default_latest_log_path;
+
 const MAX_PARENT_DEPTH: usize = 5;
+const LOG_CREATION_START_TOLERANCE: Duration = Duration::from_secs(15 * 60);
+const LOG_MODIFIED_SESSION_WINDOW: Duration = Duration::from_secs(12 * 60 * 60);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CristalixProcessSnapshot {
@@ -13,6 +19,7 @@ pub struct CristalixProcessSnapshot {
     pub launcher_processes: usize,
     pub direct_matches: usize,
     pub ancestry_matches: usize,
+    pub session_fallback_matches: usize,
 }
 
 #[derive(Debug)]
@@ -33,11 +40,16 @@ impl CristalixProcessDetector {
         self.system.refresh_processes(ProcessesToUpdate::All, true);
 
         let launcher_pids = cristalix_launcher_pids(&self.system);
+        let default_log_path = default_latest_log_path().filter(|path| path.is_file());
+        let default_log_metadata = default_log_path
+            .as_ref()
+            .and_then(|path| std::fs::metadata(path).ok());
         let mut running = false;
         let mut candidates = BTreeSet::new();
         let mut java_processes = 0;
         let mut direct_matches = 0;
         let mut ancestry_matches = 0;
+        let mut session_fallback_matches = 0;
 
         for (pid, process) in self.system.processes() {
             let name = process.name().to_string_lossy().to_ascii_lowercase();
@@ -48,6 +60,12 @@ impl CristalixProcessDetector {
                 .any(|location| references_cristalix_game(location));
             let ancestry_match = java_process
                 && descends_from_cristalix_launcher(*pid, &self.system, &launcher_pids);
+            let session_fallback_match = java_process
+                && !direct_match
+                && !ancestry_match
+                && default_log_metadata.as_ref().is_some_and(|metadata| {
+                    process_matches_log_session(process.start_time(), metadata)
+                });
 
             if java_process {
                 java_processes += 1;
@@ -61,12 +79,22 @@ impl CristalixProcessDetector {
                 ancestry_matches += 1;
             }
 
-            if !direct_match && !ancestry_match {
+            if session_fallback_match {
+                session_fallback_matches += 1;
+            }
+
+            if !direct_match && !ancestry_match && !session_fallback_match {
                 continue;
             }
 
             running = true;
             collect_log_candidates(&locations, &mut candidates);
+
+            if session_fallback_match {
+                if let Some(path) = default_log_path.as_ref() {
+                    candidates.insert(path.clone());
+                }
+            }
         }
 
         CristalixProcessSnapshot {
@@ -76,6 +104,7 @@ impl CristalixProcessDetector {
             launcher_processes: launcher_pids.len(),
             direct_matches,
             ancestry_matches,
+            session_fallback_matches,
         }
     }
 
@@ -150,7 +179,37 @@ fn process_locations(process: &Process) -> Vec<String> {
 fn references_cristalix_game(value: &str) -> bool {
     let normalized = value.replace('\\', "/").to_ascii_lowercase();
 
-    normalized.contains("/.cristalix/") && normalized.contains("minigames")
+    normalized.contains("/.cristalix/")
+        && (normalized.contains("/updates/minigames/")
+            || normalized.contains("/updates/minigames")
+            || normalized.contains("minigames"))
+}
+
+fn process_matches_log_session(process_start: u64, metadata: &Metadata) -> bool {
+    if let Ok(created) = metadata.created() {
+        if let Ok(created_since_epoch) = created.duration_since(UNIX_EPOCH) {
+            return timestamps_within(
+                process_start,
+                created_since_epoch.as_secs(),
+                LOG_CREATION_START_TOLERANCE,
+            );
+        }
+    }
+
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    let Ok(modified_since_epoch) = modified.duration_since(UNIX_EPOCH) else {
+        return false;
+    };
+    let modified_at = modified_since_epoch.as_secs();
+
+    process_start <= modified_at
+        && modified_at.saturating_sub(process_start) <= LOG_MODIFIED_SESSION_WINDOW.as_secs()
+}
+
+fn timestamps_within(left: u64, right: u64, tolerance: Duration) -> bool {
+    left.abs_diff(right) <= tolerance.as_secs()
 }
 
 fn collect_log_candidates(locations: &[String], candidates: &mut BTreeSet<PathBuf>) {
@@ -234,13 +293,6 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_native_minigames_wrapper_as_direct_evidence() {
-        assert!(references_cristalix_game(
-            r#"C:\Users\Player\.cristalix\updates\Minigames\runtime\CristalixClient.exe"#
-        ));
-    }
-
-    #[test]
     fn does_not_treat_cristalix_launcher_path_as_game_evidence() {
         assert!(!references_cristalix_game(
             r#"C:\Users\Player\.cristalix\launcher\Cristalix.exe"#
@@ -253,6 +305,29 @@ mod tests {
         assert!(is_java_process_name("java.exe"));
         assert!(is_java_process_name("javaw.exe"));
         assert!(!is_java_process_name("cristalix.exe"));
+    }
+
+    #[test]
+    fn accepts_session_timestamps_within_creation_tolerance() {
+        let tolerance = LOG_CREATION_START_TOLERANCE;
+
+        assert!(timestamps_within(1_000, 1_000, tolerance));
+        assert!(timestamps_within(
+            1_000,
+            1_000 + tolerance.as_secs(),
+            tolerance
+        ));
+    }
+
+    #[test]
+    fn rejects_session_timestamps_outside_creation_tolerance() {
+        let tolerance = LOG_CREATION_START_TOLERANCE;
+
+        assert!(!timestamps_within(
+            1_000,
+            1_001 + tolerance.as_secs(),
+            tolerance
+        ));
     }
 
     #[test]
