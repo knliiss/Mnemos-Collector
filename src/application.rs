@@ -20,6 +20,7 @@ use crate::update::{UpdateCoordinator, UpdateHandoff};
 
 const MAX_REPORTS_PER_TICK: usize = 16;
 const STARTUP_LOG_FRESHNESS: Duration = Duration::from_secs(60);
+const RECONNECT_STABILITY_WINDOW: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct CollectorApplicationConfig {
@@ -57,6 +58,7 @@ pub struct CollectorApplication {
     cached_log_path: Option<PathBuf>,
     spool: ReportSpool,
     realtime: Option<RealtimeClient>,
+    realtime_connected_at: Option<Instant>,
     reconnect_delay: Duration,
     next_reconnect_at: Instant,
     update_coordinator: Option<UpdateCoordinator>,
@@ -105,6 +107,7 @@ impl CollectorApplication {
             cached_log_path: None,
             spool,
             realtime: None,
+            realtime_connected_at: None,
             next_reconnect_at: now,
             update_coordinator,
         })
@@ -481,12 +484,13 @@ impl CollectorApplication {
             .as_ref()
             .is_some_and(RealtimeClient::is_connected)
         {
+            self.reset_reconnect_backoff_if_stable();
             return;
         }
 
         if self.realtime.is_some() {
             diagnostics::set_realtime_connected(false);
-            self.realtime = None;
+            self.clear_realtime_connection();
             self.schedule_reconnect();
         }
 
@@ -501,11 +505,13 @@ impl CollectorApplication {
 
         match RealtimeClient::connect(&self.realtime_config, &self.access_key).await {
             Ok(client) => {
+                let connected_at = Instant::now();
+
                 diagnostics::info("realtime", "Authenticated WebSocket connected");
                 diagnostics::set_realtime_connected(true);
                 self.realtime = Some(client);
-                self.reconnect_delay = self.config.reconnect_initial_delay;
-                self.next_reconnect_at = Instant::now();
+                self.realtime_connected_at = Some(connected_at);
+                self.next_reconnect_at = connected_at;
             }
             Err(error) => {
                 diagnostics::warn(
@@ -532,7 +538,7 @@ impl CollectorApplication {
             );
             diagnostics::set_realtime_connected(false);
             diagnostics::set_observing(false);
-            self.realtime = None;
+            self.clear_realtime_connection();
             self.schedule_reconnect();
             return;
         }
@@ -561,7 +567,7 @@ impl CollectorApplication {
                 );
                 diagnostics::set_realtime_connected(false);
                 diagnostics::set_observing(false);
-                self.realtime = None;
+                self.clear_realtime_connection();
                 self.schedule_reconnect();
                 return Ok(());
             }
@@ -590,7 +596,7 @@ impl CollectorApplication {
 
         if client.pause().await.is_err() {
             diagnostics::set_realtime_connected(false);
-            self.realtime = None;
+            self.clear_realtime_connection();
             self.schedule_reconnect();
             return;
         }
@@ -626,7 +632,7 @@ impl CollectorApplication {
                 if had_pending_update {
                     diagnostics::set_realtime_connected(false);
                     diagnostics::set_observing(false);
-                    self.realtime = None;
+                    self.clear_realtime_connection();
                     self.schedule_reconnect();
                 }
 
@@ -646,9 +652,34 @@ impl CollectorApplication {
 
         diagnostics::set_realtime_connected(false);
         diagnostics::set_observing(false);
-        self.realtime = None;
+        self.clear_realtime_connection();
 
         true
+    }
+
+    fn reset_reconnect_backoff_if_stable(&mut self) {
+        let Some(connected_at) = self.realtime_connected_at else {
+            return;
+        };
+
+        if !connection_is_stable(connected_at, Instant::now()) {
+            return;
+        }
+
+        if self.reconnect_delay != self.config.reconnect_initial_delay {
+            diagnostics::debug(
+                "realtime",
+                "WebSocket remained stable; reconnect backoff reset",
+            );
+        }
+
+        self.reconnect_delay = self.config.reconnect_initial_delay;
+        self.realtime_connected_at = None;
+    }
+
+    fn clear_realtime_connection(&mut self) {
+        self.realtime = None;
+        self.realtime_connected_at = None;
     }
 
     fn schedule_reconnect(&mut self) {
@@ -678,5 +709,32 @@ impl CollectorApplication {
         let _ = client.close().await;
         diagnostics::set_realtime_connected(false);
         diagnostics::set_observing(false);
+    }
+}
+
+fn connection_is_stable(connected_at: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(connected_at) >= RECONNECT_STABILITY_WINDOW
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::{RECONNECT_STABILITY_WINDOW, connection_is_stable};
+
+    #[test]
+    fn reconnect_backoff_does_not_reset_for_short_lived_connection() {
+        let connected_at = Instant::now();
+        let now = connected_at + RECONNECT_STABILITY_WINDOW - Duration::from_millis(1);
+
+        assert!(!connection_is_stable(connected_at, now));
+    }
+
+    #[test]
+    fn reconnect_backoff_resets_after_stability_window() {
+        let connected_at = Instant::now();
+        let now = connected_at + RECONNECT_STABILITY_WINDOW;
+
+        assert!(connection_is_stable(connected_at, now));
     }
 }
