@@ -15,6 +15,31 @@ struct MascotRect {
     color: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RgbColor {
+    red: u8,
+    green: u8,
+    blue: u8,
+}
+
+struct IconSurface<'a> {
+    pixels: &'a mut [u8],
+    width: usize,
+    height: usize,
+}
+
+impl IconSurface<'_> {
+    fn write(&mut self, x: usize, y: usize, color: RgbColor) {
+        let bottom_up_y = self.height - 1 - y;
+        let index = (bottom_up_y * self.width + x) * 4;
+
+        self.pixels[index] = color.blue;
+        self.pixels[index + 1] = color.green;
+        self.pixels[index + 2] = color.red;
+        self.pixels[index + 3] = 0xff;
+    }
+}
+
 static MASCOT_RECTS: OnceLock<Vec<MascotRect>> = OnceLock::new();
 
 pub unsafe fn draw(hdc: HDC, x: i32, y: i32, width: i32) {
@@ -45,9 +70,14 @@ pub unsafe fn create_icon(size: i32) -> *mut core::ffi::c_void {
     let width = size as usize;
     let height = size as usize;
     let mut color_bits = vec![0_u8; width * height * 4];
+    let mut surface = IconSurface {
+        pixels: &mut color_bits,
+        width,
+        height,
+    };
 
-    fill_icon_background(&mut color_bits, width, height);
-    rasterize_mascot(&mut color_bits, width, height);
+    fill_icon_background(&mut surface);
+    rasterize_mascot(&mut surface);
 
     let mask_stride = width.div_ceil(16) * 2;
     let mask_bits = vec![0_u8; mask_stride * height];
@@ -65,16 +95,22 @@ pub unsafe fn create_icon(size: i32) -> *mut core::ffi::c_void {
     }
 }
 
-fn fill_icon_background(target: &mut [u8], width: usize, height: usize) {
-    for y in 0..height {
-        for x in 0..width {
-            write_bgra(target, width, height, x, y, 0x05, 0x06, 0x05);
+fn fill_icon_background(surface: &mut IconSurface<'_>) {
+    let background = RgbColor {
+        red: 0x05,
+        green: 0x06,
+        blue: 0x05,
+    };
+
+    for y in 0..surface.height {
+        for x in 0..surface.width {
+            surface.write(x, y, background);
         }
     }
 }
 
-fn rasterize_mascot(target: &mut [u8], width: usize, height: usize) {
-    let size = width.min(height);
+fn rasterize_mascot(surface: &mut IconSurface<'_>) {
+    let size = surface.width.min(surface.height);
     let scale = size as f32 / 160.0;
 
     for mascot_rect in mascot_rects() {
@@ -86,35 +122,22 @@ fn rasterize_mascot(target: &mut [u8], width: usize, height: usize) {
         let bottom = ((mascot_rect.y + mascot_rect.height) as f32 * scale)
             .round()
             .clamp(0.0, size as f32) as usize;
-        let red = (mascot_rect.color & 0xff) as u8;
-        let green = ((mascot_rect.color >> 8) & 0xff) as u8;
-        let blue = ((mascot_rect.color >> 16) & 0xff) as u8;
+        let color = mascot_color(mascot_rect.color);
 
         for y in top..bottom {
             for x in left..right {
-                write_bgra(target, width, height, x, y, red, green, blue);
+                surface.write(x, y, color);
             }
         }
     }
 }
 
-fn write_bgra(
-    target: &mut [u8],
-    width: usize,
-    height: usize,
-    x: usize,
-    y: usize,
-    red: u8,
-    green: u8,
-    blue: u8,
-) {
-    let bottom_up_y = height - 1 - y;
-    let index = (bottom_up_y * width + x) * 4;
-
-    target[index] = blue;
-    target[index + 1] = green;
-    target[index + 2] = red;
-    target[index + 3] = 0xff;
+fn mascot_color(color: u32) -> RgbColor {
+    RgbColor {
+        red: (color & 0xff) as u8,
+        green: ((color >> 8) & 0xff) as u8,
+        blue: ((color >> 16) & 0xff) as u8,
+    }
 }
 
 fn mascot_rects() -> &'static Vec<MascotRect> {
