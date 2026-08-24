@@ -818,7 +818,7 @@ unsafe fn draw_log_scrollbar(
     }
 
     let track = UiRect {
-        left: rect.right - 10,
+        left: rect.right - 12,
         top: rect.top + 10,
         right: rect.right - 6,
         bottom: rect.bottom - 10,
@@ -832,9 +832,9 @@ unsafe fn draw_log_scrollbar(
         track.top + ((travel as f32 * start_line as f32 / max_start as f32) as i32).min(travel);
 
     let thumb = UiRect {
-        left: track.left,
+        left: rect.right - 14,
         top: thumb_top,
-        right: track.right,
+        right: rect.right - 4,
         bottom: thumb_top + thumb_height,
     };
 

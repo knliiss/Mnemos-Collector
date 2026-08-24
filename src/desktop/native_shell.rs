@@ -15,23 +15,24 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    EnableWindow, GetFocus, GetKeyState, SetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
-    VK_CONTROL, VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB,
+    EnableWindow, GetAsyncKeyState, GetFocus, GetKeyState, ReleaseCapture, SetCapture, SetFocus,
+    TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_CONTROL, VK_LBUTTON, VK_RETURN, VK_SHIFT,
+    VK_SPACE, VK_TAB,
 };
 use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow,
-    DispatchMessageW, ES_AUTOHSCROLL, ES_PASSWORD, GWLP_USERDATA, GetClientRect, GetMessageW,
-    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HTCAPTION, HTCLIENT, IDC_ARROW,
-    LoadCursorW, MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW,
-    SIZE_MINIMIZED, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, SendMessageW, SetForegroundWindow,
-    SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, WM_APP, WM_CLOSE,
-    WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_NCCREATE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_SIZE,
-    WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
-    WS_TABSTOP, WS_VISIBLE,
+    DispatchMessageW, ES_AUTOHSCROLL, ES_PASSWORD, GWLP_USERDATA, GetClientRect, GetCursorPos,
+    GetMessageW, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HTCAPTION, HTCLIENT,
+    IDC_ARROW, KillTimer, LoadCursorW, MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage,
+    RegisterClassW, SIZE_MINIMIZED, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, SendMessageW,
+    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage,
+    WM_APP, WM_CAPTURECHANGED, WM_CLOSE, WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCHITTEST, WM_PAINT,
+    WM_RBUTTONUP, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN,
+    WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
 };
 use zeroize::Zeroizing;
 
@@ -53,7 +54,9 @@ const WINDOW_TITLE: &str = "Mnemos Collector";
 const WINDOW_WIDTH: i32 = 1080;
 const WINDOW_HEIGHT: i32 = 720;
 const TIMER_REFRESH: usize = 1;
+const TIMER_LOG_SCROLL_DRAG: usize = 2;
 const REFRESH_INTERVAL_MS: u32 = 750;
+const LOG_SCROLL_DRAG_INTERVAL_MS: u32 = 16;
 const WM_SETICON_MESSAGE: u32 = 0x0080;
 const ICON_SMALL_VALUE: usize = 0;
 const ICON_BIG_VALUE: usize = 1;
@@ -64,6 +67,15 @@ const TRAY_ID: u32 = 1;
 const ACTIVATION_FIELD_OFFSET_Y: i32 = 4;
 const DWM_WINDOW_CORNER_PREFERENCE_ATTRIBUTE: u32 = 33;
 const DWM_WINDOW_CORNER_PREFERENCE_ROUND: u32 = 2;
+const LOG_LINE_HEIGHT: i32 = 18;
+const LOG_CHAR_WIDTH: i32 = 8;
+const LOG_TEXT_LEFT_PADDING: i32 = 12;
+const LOG_TEXT_RIGHT_PADDING: i32 = 22;
+const LOG_TEXT_VERTICAL_PADDING: i32 = 10;
+const LOG_SCROLLBAR_TRACK_TOP_PADDING: i32 = 10;
+const LOG_SCROLLBAR_TRACK_BOTTOM_PADDING: i32 = 10;
+const LOG_SCROLLBAR_MIN_THUMB_HEIGHT: i32 = 24;
+const LOG_SCROLLBAR_HIT_WIDTH: i32 = 36;
 
 pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
     unsafe {
@@ -171,6 +183,20 @@ struct SelectedLogEntry {
     text: String,
 }
 
+#[derive(Clone, Copy)]
+struct LogScrollbarGeometry {
+    track_top: i32,
+    thumb_top: i32,
+    thumb_height: i32,
+    travel: i32,
+    max_scroll: usize,
+}
+
+#[derive(Clone, Copy)]
+struct LogScrollDrag {
+    grab_offset_y: i32,
+}
+
 struct DesktopWindow {
     runtime: Handle,
     current_installation: bool,
@@ -192,6 +218,7 @@ struct DesktopWindow {
     tracking_mouse_leave: bool,
     last_log_text: String,
     log_scroll_from_bottom: usize,
+    log_scroll_drag: Option<LogScrollDrag>,
     selected_log_entry: Option<SelectedLogEntry>,
     last_runtime: RuntimeSnapshot,
 }
@@ -219,6 +246,7 @@ impl DesktopWindow {
             tracking_mouse_leave: false,
             last_log_text: String::new(),
             log_scroll_from_bottom: 0,
+            log_scroll_drag: None,
             selected_log_entry: None,
             last_runtime: diagnostics::runtime_snapshot(),
         }
@@ -599,6 +627,126 @@ impl DesktopWindow {
         self.invalidate(hwnd);
     }
 
+    fn begin_log_scroll_drag(&mut self, hwnd: HWND, x: i32, y: i32) -> bool {
+        let layout = window_layout(hwnd, self.provisioned);
+        let Some(geometry) = log_scrollbar_geometry(
+            &self.last_log_text,
+            layout.logs_view,
+            self.log_scroll_from_bottom,
+        ) else {
+            return false;
+        };
+
+        if !log_scrollbar_hit_lane(layout.logs_view, x, y) {
+            return false;
+        }
+
+        let thumb_bottom = geometry.thumb_top + geometry.thumb_height;
+        let grab_offset_y = if y >= geometry.thumb_top && y <= thumb_bottom {
+            y - geometry.thumb_top
+        } else {
+            geometry.thumb_height / 2
+        };
+
+        self.log_scroll_drag = Some(LogScrollDrag { grab_offset_y });
+        self.activation_button_focused = false;
+
+        unsafe {
+            SetFocus(hwnd);
+            SetCapture(hwnd);
+            SetTimer(
+                hwnd,
+                TIMER_LOG_SCROLL_DRAG,
+                LOG_SCROLL_DRAG_INTERVAL_MS,
+                None,
+            );
+        }
+
+        self.update_log_scroll_drag(hwnd, y);
+        true
+    }
+
+    fn update_log_scroll_drag(&mut self, hwnd: HWND, y: i32) {
+        let Some(drag) = self.log_scroll_drag else {
+            return;
+        };
+        let layout = window_layout(hwnd, self.provisioned);
+        let Some(geometry) = log_scrollbar_geometry(
+            &self.last_log_text,
+            layout.logs_view,
+            self.log_scroll_from_bottom,
+        ) else {
+            self.cancel_log_scroll_drag(hwnd);
+            return;
+        };
+        let thumb_top = y - drag.grab_offset_y;
+        let scroll_from_bottom = log_scroll_from_thumb_top(geometry, thumb_top);
+
+        if self.log_scroll_from_bottom != scroll_from_bottom {
+            self.log_scroll_from_bottom = scroll_from_bottom;
+            self.invalidate(hwnd);
+        }
+    }
+
+    fn finish_log_scroll_drag(&mut self, hwnd: HWND, y: i32) -> bool {
+        if self.log_scroll_drag.is_none() {
+            return false;
+        }
+
+        self.update_log_scroll_drag(hwnd, y);
+        self.log_scroll_drag = None;
+
+        unsafe {
+            KillTimer(hwnd, TIMER_LOG_SCROLL_DRAG);
+            ReleaseCapture();
+        }
+
+        self.invalidate(hwnd);
+        true
+    }
+
+    fn cancel_log_scroll_drag(&mut self, hwnd: HWND) {
+        if self.log_scroll_drag.take().is_some() {
+            unsafe {
+                KillTimer(hwnd, TIMER_LOG_SCROLL_DRAG);
+            }
+
+            self.invalidate(hwnd);
+        }
+    }
+
+    fn poll_log_scroll_drag(&mut self, hwnd: HWND) {
+        if self.log_scroll_drag.is_none() {
+            return;
+        }
+
+        let left_button_pressed = unsafe { GetAsyncKeyState(VK_LBUTTON as i32) } < 0;
+
+        if !left_button_pressed {
+            self.log_scroll_drag = None;
+
+            unsafe {
+                KillTimer(hwnd, TIMER_LOG_SCROLL_DRAG);
+                ReleaseCapture();
+            }
+
+            self.invalidate(hwnd);
+            return;
+        }
+
+        let mut point = POINT { x: 0, y: 0 };
+
+        unsafe {
+            if GetCursorPos(&mut point) == 0 {
+                return;
+            }
+
+            ScreenToClient(hwnd, &mut point);
+        }
+
+        self.update_log_scroll_drag(hwnd, point.y);
+    }
+
     fn select_log_entry(&mut self, hwnd: HWND, layout: Layout, x: i32, y: i32) {
         self.activation_button_focused = false;
         self.selected_log_entry = view::log_entry_at(
@@ -653,7 +801,21 @@ impl DesktopWindow {
     }
 
     fn mouse_move(&mut self, hwnd: HWND, x: i32, y: i32) {
+        if self.log_scroll_drag.is_some() {
+            self.update_log_scroll_drag(hwnd, y);
+            return;
+        }
+
         let layout = window_layout(hwnd, self.provisioned);
+        let left_button_pressed = unsafe { GetAsyncKeyState(VK_LBUTTON as i32) } < 0;
+
+        if left_button_pressed
+            && log_scrollbar_hit_lane(layout.logs_view, x, y)
+            && self.begin_log_scroll_drag(hwnd, x, y)
+        {
+            return;
+        }
+
         let mut hovered = view::interactive_element_at(layout, self.provisioned, x, y);
 
         if self.provisioning && hovered == Some(InteractiveElement::ActivateButton) {
@@ -854,6 +1016,13 @@ unsafe extern "system" fn window_proc(
             }
         }
         WM_TIMER => {
+            if !state.is_null() && wparam == TIMER_LOG_SCROLL_DRAG {
+                unsafe {
+                    (*state).poll_log_scroll_drag(hwnd);
+                }
+                return 0;
+            }
+
             if wparam == TIMER_REFRESH && !state.is_null() {
                 unsafe {
                     (*state).refresh(hwnd);
@@ -861,13 +1030,37 @@ unsafe extern "system" fn window_proc(
             }
             return 0;
         }
+        WM_LBUTTONDOWN => {
+            if !state.is_null() {
+                let x = low_word(lparam as usize) as i16 as i32;
+                let y = high_word(lparam as usize) as i16 as i32;
+
+                if unsafe { (*state).begin_log_scroll_drag(hwnd, x, y) } {
+                    return 0;
+                }
+            }
+        }
         WM_LBUTTONUP => {
             if !state.is_null() {
                 let x = low_word(lparam as usize) as i16 as i32;
                 let y = high_word(lparam as usize) as i16 as i32;
 
+                if unsafe { (*state).finish_log_scroll_drag(hwnd, y) } {
+                    return 0;
+                }
+
                 unsafe {
                     (*state).click(hwnd, x, y);
+                }
+            }
+            return 0;
+        }
+        WM_CAPTURECHANGED => {
+            let left_button_pressed = unsafe { GetAsyncKeyState(VK_LBUTTON as i32) } < 0;
+
+            if !state.is_null() && !left_button_pressed {
+                unsafe {
+                    (*state).cancel_log_scroll_drag(hwnd);
                 }
             }
             return 0;
@@ -985,6 +1178,68 @@ fn hit_test_window(hwnd: HWND, provisioned: bool, point: POINT) -> LRESULT {
     }
 
     HTCLIENT as isize
+}
+
+fn log_scrollbar_geometry(
+    text: &str,
+    rect: view::UiRect,
+    scroll_from_bottom: usize,
+) -> Option<LogScrollbarGeometry> {
+    let text_width = rect.width() - LOG_TEXT_LEFT_PADDING - LOG_TEXT_RIGHT_PADDING;
+    let text_height = rect.height() - LOG_TEXT_VERTICAL_PADDING * 2;
+    let max_chars = ((text_width.max(LOG_CHAR_WIDTH) / LOG_CHAR_WIDTH) as usize).max(20);
+    let total_lines = text
+        .lines()
+        .map(|line| {
+            let count = line.chars().count().max(1);
+            count.div_ceil(max_chars.max(1))
+        })
+        .sum::<usize>();
+    let visible_lines = ((text_height.max(LOG_LINE_HEIGHT) / LOG_LINE_HEIGHT) as usize).max(1);
+
+    if total_lines <= visible_lines {
+        return None;
+    }
+
+    let max_scroll = total_lines - visible_lines;
+    let clamped_scroll = scroll_from_bottom.min(max_scroll);
+    let start_line = max_scroll - clamped_scroll;
+    let track_top = rect.top + LOG_SCROLLBAR_TRACK_TOP_PADDING;
+    let track_bottom = rect.bottom - LOG_SCROLLBAR_TRACK_BOTTOM_PADDING;
+    let track_height = (track_bottom - track_top).max(1);
+    let thumb_height = ((track_height as f32 * visible_lines as f32 / total_lines as f32) as i32)
+        .clamp(LOG_SCROLLBAR_MIN_THUMB_HEIGHT, track_height);
+    let travel = (track_height - thumb_height).max(0);
+    let thumb_top = track_top
+        + ((travel as f32 * start_line as f32 / max_scroll.max(1) as f32) as i32).min(travel);
+
+    Some(LogScrollbarGeometry {
+        track_top,
+        thumb_top,
+        thumb_height,
+        travel,
+        max_scroll,
+    })
+}
+
+fn log_scrollbar_hit_lane(rect: view::UiRect, x: i32, y: i32) -> bool {
+    x >= rect.right - LOG_SCROLLBAR_HIT_WIDTH
+        && x <= rect.right
+        && y >= rect.top
+        && y <= rect.bottom
+}
+
+fn log_scroll_from_thumb_top(geometry: LogScrollbarGeometry, thumb_top: i32) -> usize {
+    if geometry.travel == 0 || geometry.max_scroll == 0 {
+        return 0;
+    }
+
+    let offset = (thumb_top - geometry.track_top).clamp(0, geometry.travel);
+    let start_line = ((offset as f64 * geometry.max_scroll as f64 / geometry.travel as f64).round()
+        as usize)
+        .min(geometry.max_scroll);
+
+    geometry.max_scroll - start_line
 }
 
 async fn provision_current_installation(token: &str, device_name: &str) -> Result<Option<String>> {
@@ -1196,7 +1451,10 @@ fn high_word(value: usize) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ACTIVATION_FIELD_OFFSET_Y, WINDOW_HEIGHT, WINDOW_WIDTH, adjusted_layout, view};
+    use super::{
+        ACTIVATION_FIELD_OFFSET_Y, WINDOW_HEIGHT, WINDOW_WIDTH, adjusted_layout,
+        log_scroll_from_thumb_top, log_scrollbar_geometry, view,
+    };
 
     #[test]
     fn desktop_window_uses_fixed_compact_dimensions() {
@@ -1222,5 +1480,33 @@ mod tests {
             base.activate_button.top + ACTIVATION_FIELD_OFFSET_Y
         );
         assert_eq!(adjusted.logs_card.top, base.logs_card.top);
+    }
+
+    #[test]
+    fn log_scrollbar_maps_bottom_and_top_positions() {
+        let rect = view::UiRect {
+            left: 0,
+            top: 0,
+            right: 500,
+            bottom: 220,
+        };
+        let text = (0..80)
+            .map(|index| format!("log line {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let bottom = log_scrollbar_geometry(&text, rect, 0).unwrap();
+        let top = log_scrollbar_geometry(&text, rect, bottom.max_scroll).unwrap();
+
+        assert_eq!(bottom.thumb_top, bottom.track_top + bottom.travel);
+        assert_eq!(top.thumb_top, top.track_top);
+        assert_eq!(
+            log_scroll_from_thumb_top(bottom, bottom.track_top + bottom.travel),
+            0
+        );
+        assert_eq!(
+            log_scroll_from_thumb_top(bottom, bottom.track_top),
+            bottom.max_scroll
+        );
     }
 }
