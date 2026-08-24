@@ -51,6 +51,9 @@ impl UiRect {
 
 #[derive(Clone, Copy)]
 pub(super) struct Layout {
+    pub title_bar: UiRect,
+    pub window_minimize: UiRect,
+    pub window_close: UiRect,
     pub hero: UiRect,
     pub activation: Option<UiRect>,
     pub token_edit: UiRect,
@@ -85,6 +88,24 @@ struct LogVisualLine {
 
 pub(super) fn layout(width: i32, height: i32, provisioned: bool) -> Layout {
     let content_right = (width - CONTENT_MARGIN).max(CONTENT_MARGIN + 680);
+    let title_bar = UiRect {
+        left: 0,
+        top: 0,
+        right: width,
+        bottom: HEADER_HEIGHT,
+    };
+    let window_close = UiRect {
+        left: width - 56,
+        top: 13,
+        right: width - 18,
+        bottom: 47,
+    };
+    let window_minimize = UiRect {
+        left: window_close.left - 46,
+        top: 13,
+        right: window_close.left - 8,
+        bottom: 47,
+    };
     let hero_top = HEADER_HEIGHT + 6;
     let hero_height = 154;
 
@@ -160,6 +181,9 @@ pub(super) fn layout(width: i32, height: i32, provisioned: bool) -> Layout {
     };
 
     Layout {
+        title_bar,
+        window_minimize,
+        window_close,
         hero,
         activation,
         token_edit,
@@ -187,7 +211,7 @@ pub(super) unsafe fn draw(
     state: ViewState<'_>,
 ) {
     unsafe {
-        draw_header(hdc, fonts);
+        draw_header(hdc, layout, fonts);
         draw_hero(hdc, runtime, layout, fonts);
 
         if let Some(activation) = layout.activation {
@@ -198,7 +222,7 @@ pub(super) unsafe fn draw(
     }
 }
 
-unsafe fn draw_header(hdc: *mut c_void, fonts: Fonts) {
+unsafe fn draw_header(hdc: *mut c_void, layout: Layout, fonts: Fonts) {
     let icon = UiRect {
         left: CONTENT_MARGIN,
         top: 12,
@@ -215,7 +239,7 @@ unsafe fn draw_header(hdc: *mut c_void, fonts: Fonts) {
             UiRect {
                 left: 78,
                 top: 14,
-                right: 210,
+                right: layout.window_minimize.left - 20,
                 bottom: 34,
             },
             "MNEMOS",
@@ -227,13 +251,22 @@ unsafe fn draw_header(hdc: *mut c_void, fonts: Fonts) {
             UiRect {
                 left: 78,
                 top: 34,
-                right: 250,
+                right: layout.window_minimize.left - 20,
                 bottom: 60,
             },
             "Collector",
             fonts.section,
             theme::TEXT,
         );
+
+        draw_window_button(
+            hdc,
+            layout.window_minimize,
+            "—",
+            false,
+            fonts.ui,
+        );
+        draw_window_button(hdc, layout.window_close, "×", true, fonts.ui);
     }
 }
 
@@ -771,6 +804,31 @@ unsafe fn draw_primary_button(hdc: *mut c_void, rect: UiRect, label: &str, font:
     unsafe {
         draw_pill(hdc, rect, theme::ACCENT, theme::ACCENT);
         draw_text_centered(hdc, rect.inset(8, 2), label, font, theme::BACKGROUND_DEEP);
+    }
+}
+
+unsafe fn draw_window_button(
+    hdc: *mut c_void,
+    rect: UiRect,
+    label: &str,
+    danger: bool,
+    font: *mut c_void,
+) {
+    let fill = if danger {
+        theme::DANGER_DIM
+    } else {
+        theme::SURFACE
+    };
+    let border = if danger { theme::DANGER } else { theme::LINE };
+    let text = if danger {
+        theme::DANGER
+    } else {
+        theme::TEXT_SECONDARY
+    };
+
+    unsafe {
+        draw_pill(hdc, rect, fill, border);
+        draw_text_centered(hdc, rect.inset(6, 2), label, font, text);
     }
 }
 
