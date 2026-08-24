@@ -1,0 +1,204 @@
+name: Distribution
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: collector-distribution-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  LINUXDEPLOY_VERSION: 1-alpha-20250213-2
+
+jobs:
+  windows-signing-config:
+    name: windows-authenticode-config
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.MNEMOS_WINDOWS_CODE_SIGNING_PFX_BASE64 }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.MNEMOS_WINDOWS_CODE_SIGNING_PFX_PASSWORD }}
+
+    steps:
+      - name: Validate optional Windows Authenticode pair
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if { [ -n "${WINDOWS_CERTIFICATE_PFX_BASE64:-}" ] && [ -z "${WINDOWS_CERTIFICATE_PASSWORD:-}" ]; } \
+            || { [ -z "${WINDOWS_CERTIFICATE_PFX_BASE64:-}" ] && [ -n "${WINDOWS_CERTIFICATE_PASSWORD:-}" ]; }
+          then
+            echo "MNEMOS_WINDOWS_CODE_SIGNING_PFX_BASE64 and MNEMOS_WINDOWS_CODE_SIGNING_PFX_PASSWORD must be configured together."
+            exit 1
+          fi
+
+          if [ -z "${WINDOWS_CERTIFICATE_PFX_BASE64:-}" ]; then
+            echo "Windows Authenticode signing is not configured; unsigned Windows releases remain allowed."
+          fi
+
+  windows:
+    name: windows-x86_64-application
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup target add x86_64-pc-windows-msvc --toolchain 1.98.0
+
+      - name: Build Windows application
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY:-}" ]; then
+            echo "MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY repository variable is required."
+            exit 1
+          fi
+
+          cargo +1.98.0 build \
+            --locked \
+            --release \
+            --target x86_64-pc-windows-msvc
+
+          mkdir -p dist
+          cp \
+            target/x86_64-pc-windows-msvc/release/mnemos-collector.exe \
+            dist/Mnemos-Collector-Windows-x86_64.exe
+
+          test -s dist/Mnemos-Collector-Windows-x86_64.exe
+
+      - name: Upload Windows application
+        uses: actions/upload-artifact@v7
+        with:
+          name: distribution-windows-x86_64
+          path: dist/Mnemos-Collector-Windows-x86_64.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  linux:
+    name: linux-x86_64-application
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    env:
+      MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install packaging dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            desktop-file-utils \
+            dpkg-dev \
+            librsvg2-bin \
+            patchelf
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup target add x86_64-unknown-linux-gnu --toolchain 1.98.0
+
+      - name: Build Linux Collector
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY:-}" ]; then
+            echo "MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY repository variable is required."
+            exit 1
+          fi
+
+          cargo +1.98.0 build \
+            --locked \
+            --release \
+            --target x86_64-unknown-linux-gnu
+
+      - name: Install pinned linuxdeploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tools
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --output tools/linuxdeploy-x86_64.AppImage \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/linuxdeploy-x86_64.AppImage"
+          chmod 0755 tools/linuxdeploy-x86_64.AppImage
+
+      - name: Package Linux applications
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)"
+
+          if [ -z "$version" ]; then
+            echo "Cargo package version could not be resolved."
+            exit 1
+          fi
+
+          bash -n scripts/package-linux.sh
+          bash scripts/package-linux.sh \
+            target/x86_64-unknown-linux-gnu/release/mnemos-collector \
+            "$version" \
+            dist \
+            tools/linuxdeploy-x86_64.AppImage
+
+      - name: Verify Linux packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)"
+
+          test -s dist/Mnemos-Collector-Linux-x86_64.AppImage
+          test -x dist/Mnemos-Collector-Linux-x86_64.AppImage
+          test -s dist/Mnemos-Collector-Linux-amd64.deb
+          test -s dist/mnemos-collector-update-linux-x86_64
+
+          dpkg-deb --info dist/Mnemos-Collector-Linux-amd64.deb > /dev/null
+          test "$(dpkg-deb -f dist/Mnemos-Collector-Linux-amd64.deb Version)" = "$version"
+
+          deb_contents="$(dpkg-deb -c dist/Mnemos-Collector-Linux-amd64.deb)"
+          grep -Fq './usr/bin/mnemos-collector' <<< "$deb_contents"
+          grep -Fq './usr/share/applications/mnemos-collector.desktop' <<< "$deb_contents"
+
+          rm -rf squashfs-root
+          APPIMAGE_EXTRACT_AND_RUN=1 \
+            dist/Mnemos-Collector-Linux-x86_64.AppImage \
+            --appimage-extract \
+            > /dev/null
+          test -x squashfs-root/usr/bin/mnemos-collector
+          test -f squashfs-root/usr/share/applications/mnemos-collector.desktop
+          desktop-file-validate \
+            squashfs-root/usr/share/applications/mnemos-collector.desktop
+
+      - name: Upload Linux applications
+        uses: actions/upload-artifact@v7
+        with:
+          name: distribution-linux-x86_64
+          path: |
+            dist/Mnemos-Collector-Linux-x86_64.AppImage
+            dist/Mnemos-Collector-Linux-amd64.deb
+            dist/mnemos-collector-update-linux-x86_64
+          if-no-files-found: error
+          retention-days: 7

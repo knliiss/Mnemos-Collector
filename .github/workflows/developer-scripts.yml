@@ -1,0 +1,53 @@
+name: Developer Scripts
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-developer-scripts:
+    name: windows-developer-scripts
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        shell: bash
+        run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy
+
+      - name: Parse PowerShell scripts
+        shell: powershell
+        run: |
+          $files = @((Resolve-Path .\dev.ps1).Path)
+          $files += Get-ChildItem .\scripts -Filter *.ps1 | ForEach-Object FullName
+
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $file,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_ }
+              exit 1
+            }
+          }
+
+      - name: Exercise Windows local status wrapper
+        shell: cmd
+        run: dev.cmd status
+
+      - name: Exercise local verification wrapper
+        shell: powershell
+        run: .\dev.ps1 verify

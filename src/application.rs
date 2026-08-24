@@ -1,0 +1,740 @@
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result};
+use chrono::Utc;
+use tokio::signal;
+use tokio::time::{MissedTickBehavior, interval};
+
+use crate::cristalix::{
+    CristalixProcessDetector, CristalixProcessSnapshot, LogTailer, default_latest_log_path,
+    discover_latest_log, log_updated_within, scan_existing_log_lines,
+};
+use crate::diagnostics;
+use crate::parser::{EventDeduplicator, GameMode, LogParser};
+use crate::protocol::CollectorEvent;
+use crate::realtime::{RealtimeClient, RealtimeConfig};
+use crate::security::credential_id_from_access_key;
+use crate::spool::{PendingReport, ReportSpool};
+use crate::update::{UpdateCoordinator, UpdateHandoff};
+
+const MAX_REPORTS_PER_TICK: usize = 16;
+const STARTUP_LOG_FRESHNESS: Duration = Duration::from_secs(60);
+const RECONNECT_STABILITY_WINDOW: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone)]
+pub struct CollectorApplicationConfig {
+    pub process_check_interval: Duration,
+    pub log_poll_interval: Duration,
+    pub reconnect_initial_delay: Duration,
+    pub reconnect_max_delay: Duration,
+}
+
+impl Default for CollectorApplicationConfig {
+    fn default() -> Self {
+        Self {
+            process_check_interval: Duration::from_secs(2),
+            log_poll_interval: Duration::from_millis(250),
+            reconnect_initial_delay: Duration::from_secs(1),
+            reconnect_max_delay: Duration::from_secs(30),
+        }
+    }
+}
+
+pub struct CollectorApplication {
+    config: CollectorApplicationConfig,
+    access_key: String,
+    realtime_config: RealtimeConfig,
+    process_detector: CristalixProcessDetector,
+    process_running: bool,
+    process_log_candidates: Vec<PathBuf>,
+    process_scan_logged: bool,
+    log_missing_logged: bool,
+    session_confirmed: bool,
+    next_process_check: Instant,
+    parser: LogParser,
+    deduplicator: EventDeduplicator,
+    tailer: Option<LogTailer>,
+    cached_log_path: Option<PathBuf>,
+    spool: ReportSpool,
+    realtime: Option<RealtimeClient>,
+    realtime_connected_at: Option<Instant>,
+    reconnect_delay: Duration,
+    next_reconnect_at: Instant,
+    update_coordinator: Option<UpdateCoordinator>,
+}
+
+impl CollectorApplication {
+    pub async fn new(access_key: String) -> Result<Self> {
+        Self::with_config(access_key, CollectorApplicationConfig::default()).await
+    }
+
+    pub async fn with_config(
+        access_key: String,
+        config: CollectorApplicationConfig,
+    ) -> Result<Self> {
+        let spool = ReportSpool::open_default()
+            .await
+            .context("failed to open reliable report spool")?;
+        let collector_id = credential_id_from_access_key(&access_key)?;
+        let update_coordinator = UpdateCoordinator::from_build(collector_id)
+            .context("failed to initialize collector update coordinator")?;
+        let now = Instant::now();
+
+        diagnostics::info(
+            "runtime",
+            format!("Collector worker initialized for credential {collector_id}"),
+        );
+        diagnostics::set_game_mode("Unknown");
+        diagnostics::set_realtime_connected(false);
+        diagnostics::set_observing(false);
+
+        Ok(Self {
+            reconnect_delay: config.reconnect_initial_delay,
+            config,
+            access_key,
+            realtime_config: RealtimeConfig::default(),
+            process_detector: CristalixProcessDetector::default(),
+            process_running: false,
+            process_log_candidates: Vec::new(),
+            process_scan_logged: false,
+            log_missing_logged: false,
+            session_confirmed: false,
+            next_process_check: now,
+            parser: LogParser::default(),
+            deduplicator: EventDeduplicator::new(Duration::from_secs(2)),
+            tailer: None,
+            cached_log_path: None,
+            spool,
+            realtime: None,
+            realtime_connected_at: None,
+            next_reconnect_at: now,
+            update_coordinator,
+        })
+    }
+
+    pub async fn run(mut self) -> Result<()> {
+        diagnostics::info("runtime", "Collector event loop started");
+
+        let mut ticker = interval(self.config.log_poll_interval);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    if self.tick().await? {
+                        diagnostics::info("update", "Collector handed off to updater");
+                        return Ok(());
+                    }
+                }
+                result = signal::ctrl_c() => {
+                    result.context("failed to listen for shutdown signal")?;
+                    diagnostics::info("runtime", "Shutdown signal received");
+                    self.shutdown().await;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    async fn tick(&mut self) -> Result<bool> {
+        self.refresh_process_state_if_due().await?;
+        self.ensure_realtime_connection().await;
+        self.ensure_log_tailer().await?;
+        self.read_log().await?;
+
+        if self.session_confirmed && self.parser.mode() == GameMode::MasterSword {
+            self.observe_connection().await;
+            self.deliver_pending_reports().await?;
+        } else {
+            self.pause_connection().await;
+        }
+
+        Ok(self.try_apply_update().await)
+    }
+
+    async fn refresh_process_state_if_due(&mut self) -> Result<()> {
+        let now = Instant::now();
+
+        if now < self.next_process_check {
+            return Ok(());
+        }
+
+        self.next_process_check = now + self.config.process_check_interval;
+
+        let snapshot = self.process_detector.inspect();
+        let candidates_changed = snapshot.latest_log_candidates != self.process_log_candidates;
+        let running_changed = snapshot.running != self.process_running;
+        let strong_process_stop =
+            self.process_running && !snapshot.running && snapshot.java_processes == 0;
+
+        if !self.process_scan_logged || running_changed || candidates_changed {
+            self.log_process_scan(&snapshot);
+            self.process_scan_logged = true;
+        }
+
+        self.process_running = snapshot.running;
+        self.process_log_candidates = snapshot.latest_log_candidates;
+        diagnostics::set_cristalix_running(self.process_running || self.session_confirmed);
+
+        if strong_process_stop {
+            diagnostics::info(
+                "cristalix",
+                "Previously matched Cristalix process disappeared and no java/javaw process remains",
+            );
+
+            let pending_events = self.parser.flush();
+
+            self.enqueue_events(pending_events).await?;
+            self.parser = LogParser::default();
+            self.tailer = None;
+            self.cached_log_path = None;
+            self.log_missing_logged = false;
+            self.session_confirmed = false;
+            diagnostics::set_cristalix_running(false);
+            diagnostics::set_game_mode("Unknown");
+            diagnostics::set_log_path(None);
+            self.pause_connection().await;
+            return Ok(());
+        }
+
+        let tailer_points_to_running_process = self.tailer.as_ref().is_none_or(|tailer| {
+            self.process_log_candidates.is_empty()
+                || self
+                    .process_log_candidates
+                    .iter()
+                    .any(|candidate| candidate == tailer.path())
+        });
+
+        if candidates_changed && !tailer_points_to_running_process {
+            diagnostics::debug(
+                "cristalix",
+                "Cristalix log source changed; parser context will be rebuilt without replaying historical events",
+            );
+            self.parser = LogParser::default();
+            self.tailer = None;
+            self.cached_log_path = None;
+            self.log_missing_logged = false;
+            self.session_confirmed = false;
+            diagnostics::set_cristalix_running(self.process_running);
+            diagnostics::set_game_mode("Unknown");
+            diagnostics::set_log_path(None);
+            self.pause_connection().await;
+        }
+
+        if !running_changed {
+            return Ok(());
+        }
+
+        if snapshot.running {
+            diagnostics::info(
+                "cristalix",
+                "Cristalix process evidence detected; log activity remains the OBSERVING gate",
+            );
+        } else {
+            diagnostics::debug(
+                "cristalix",
+                "Process evidence disappeared; Collector keeps following latest.log because Windows process metadata is not a reliable observation gate",
+            );
+        }
+
+        Ok(())
+    }
+
+    fn log_process_scan(&self, snapshot: &CristalixProcessSnapshot) {
+        let default_log_exists = default_latest_log_path().is_some_and(|path| path.is_file());
+        let hint = if snapshot.running && snapshot.latest_log_candidates.is_empty() {
+            " Hint: process evidence matched without a derived log path; default latest.log discovery will be used."
+        } else if !snapshot.running && snapshot.java_processes == 0 {
+            " Hint: no java/javaw process is visible. latest.log is still checked independently."
+        } else if !snapshot.running {
+            " Hint: process metadata did not prove Cristalix. This no longer blocks latest.log recovery or live-line confirmation."
+        } else {
+            ""
+        };
+
+        diagnostics::debug(
+            "cristalix",
+            format!(
+                "Process scan: running={}, java/javaw={}, launchers={}, direct matches={}, ancestry matches={}, session fallback matches={}, latest.log candidates={}, default latest.log exists={}.{}",
+                snapshot.running,
+                snapshot.java_processes,
+                snapshot.launcher_processes,
+                snapshot.direct_matches,
+                snapshot.ancestry_matches,
+                snapshot.session_fallback_matches,
+                snapshot.latest_log_candidates.len(),
+                default_log_exists,
+                hint,
+            ),
+        );
+    }
+
+    async fn ensure_log_tailer(&mut self) -> Result<()> {
+        if self.tailer.is_some() {
+            return Ok(());
+        }
+
+        let Some(path) = discover_latest_log(
+            self.cached_log_path.as_deref(),
+            &self.process_log_candidates,
+        ) else {
+            diagnostics::set_log_path(None);
+
+            if !self.log_missing_logged {
+                diagnostics::debug(
+                    "cristalix",
+                    "latest.log was not found in process candidates, cache, or the default ~/.cristalix/updates/Minigames/logs path. Collector will keep retrying automatically.",
+                );
+                self.log_missing_logged = true;
+            }
+
+            return Ok(());
+        };
+
+        self.log_missing_logged = false;
+        diagnostics::debug(
+            "cristalix",
+            format!("Selected latest.log: {}", path.display()),
+        );
+
+        match LogTailer::open_from_end(&path).await {
+            Ok(tailer) => {
+                self.bootstrap_parser_from_log(&path).await?;
+                self.cached_log_path = Some(path.clone());
+                self.tailer = Some(tailer);
+                diagnostics::set_log_path(Some(path));
+            }
+            Err(error) => {
+                self.session_confirmed = false;
+                diagnostics::set_cristalix_running(self.process_running);
+                diagnostics::set_log_path(None);
+                self.cached_log_path = None;
+                return Err(error).context("failed to start latest.log tailing");
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn bootstrap_parser_from_log(&mut self, path: &Path) -> Result<()> {
+        let mut parser = LogParser::default();
+
+        scan_existing_log_lines(path, |line| parser.consume_context_line(line))
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to recover current Cristalix mode from {}",
+                    path.display()
+                )
+            })?;
+
+        let mode = parser.mode();
+        let fresh_log = log_updated_within(path, STARTUP_LOG_FRESHNESS);
+
+        self.session_confirmed = fresh_log;
+        diagnostics::set_cristalix_running(self.process_running || self.session_confirmed);
+        diagnostics::set_game_mode(format!("{mode:?}"));
+        diagnostics::info(
+            "parser",
+            format!("Recovered game mode from existing latest.log: {mode:?}"),
+        );
+
+        if fresh_log {
+            diagnostics::info(
+                "cristalix",
+                "latest.log was updated within the last 60 seconds; current Cristalix session is confirmed",
+            );
+        } else {
+            diagnostics::debug(
+                "cristalix",
+                "Existing latest.log is older than 60 seconds. Historical mode is restored, but OBSERVING waits for the first new complete log line.",
+            );
+        }
+
+        if mode != GameMode::MasterSword {
+            diagnostics::debug(
+                "parser",
+                "Collector remains PAUSED until Master Sword context is recognized.",
+            );
+        } else if fresh_log {
+            diagnostics::debug(
+                "parser",
+                "Master Sword context and recent log activity confirm the current session; no reconnect or mode re-entry is required",
+            );
+        } else {
+            diagnostics::debug(
+                "parser",
+                "Master Sword context was recovered from history, but the session is not live-confirmed yet. Any new complete log line will confirm it without requiring a reconnect.",
+            );
+        }
+
+        self.parser = parser;
+
+        Ok(())
+    }
+
+    async fn read_log(&mut self) -> Result<()> {
+        let read_result = {
+            let Some(tailer) = self.tailer.as_mut() else {
+                return Ok(());
+            };
+            let generation = tailer.generation();
+
+            tailer
+                .read_new_lines()
+                .await
+                .map(|lines| (lines, tailer.generation() != generation))
+        };
+
+        let (lines, source_reset) = match read_result {
+            Ok(result) => result,
+            Err(error) => {
+                diagnostics::warn(
+                    "cristalix",
+                    format!("latest.log read failed and will be rediscovered: {error:#}"),
+                );
+                self.parser = LogParser::default();
+                self.tailer = None;
+                self.cached_log_path = None;
+                self.log_missing_logged = false;
+                self.session_confirmed = false;
+                diagnostics::set_cristalix_running(self.process_running);
+                diagnostics::set_game_mode("Unknown");
+                diagnostics::set_log_path(None);
+                self.pause_connection().await;
+                return Ok(());
+            }
+        };
+
+        if source_reset {
+            let path = self
+                .tailer
+                .as_ref()
+                .map(|tailer| tailer.path().to_path_buf());
+
+            diagnostics::debug(
+                "cristalix",
+                "latest.log was replaced or truncated; rebuilding mode context without replaying historical events",
+            );
+            self.parser = LogParser::default();
+            self.session_confirmed = false;
+
+            if let Some(path) = path {
+                self.bootstrap_parser_from_log(&path).await?;
+            }
+
+            self.pause_connection().await;
+            return Ok(());
+        }
+
+        if !lines.is_empty() && !self.session_confirmed {
+            self.session_confirmed = true;
+            diagnostics::set_cristalix_running(true);
+            diagnostics::info(
+                "cristalix",
+                "First new complete latest.log line confirmed the live Cristalix session",
+            );
+        }
+
+        for line in lines {
+            let previous_mode = self.parser.mode();
+            let events = self.parser.consume_line(&line);
+            let current_mode = self.parser.mode();
+
+            if previous_mode != current_mode {
+                diagnostics::info(
+                    "parser",
+                    format!("Game mode changed: {previous_mode:?} -> {current_mode:?}"),
+                );
+                diagnostics::set_game_mode(format!("{current_mode:?}"));
+            }
+
+            self.enqueue_events(events).await?;
+
+            if previous_mode == GameMode::MasterSword && current_mode != GameMode::MasterSword {
+                self.pause_connection().await;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn enqueue_events(&mut self, events: Vec<CollectorEvent>) -> Result<()> {
+        for event in events {
+            if !self.deduplicator.accept(&event, Instant::now()) {
+                diagnostics::debug("events", "Duplicate collector event suppressed locally");
+                continue;
+            }
+
+            diagnostics::debug("events", format!("Persisting observed event: {event:?}"));
+
+            self.spool
+                .enqueue(PendingReport::new(event, Utc::now()))
+                .await
+                .context("failed to persist observed event before delivery")?;
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_realtime_connection(&mut self) {
+        if self
+            .realtime
+            .as_ref()
+            .is_some_and(RealtimeClient::is_connected)
+        {
+            self.reset_reconnect_backoff_if_stable();
+            return;
+        }
+
+        if self.realtime.is_some() {
+            diagnostics::set_realtime_connected(false);
+            self.clear_realtime_connection();
+            self.schedule_reconnect();
+        }
+
+        if Instant::now() < self.next_reconnect_at {
+            return;
+        }
+
+        diagnostics::debug(
+            "realtime",
+            format!("Connecting to {}", self.realtime_config.endpoint),
+        );
+
+        match RealtimeClient::connect(&self.realtime_config, &self.access_key).await {
+            Ok(client) => {
+                let connected_at = Instant::now();
+
+                diagnostics::info("realtime", "Authenticated WebSocket connected");
+                diagnostics::set_realtime_connected(true);
+                self.realtime = Some(client);
+                self.realtime_connected_at = Some(connected_at);
+                self.next_reconnect_at = connected_at;
+            }
+            Err(error) => {
+                diagnostics::warn(
+                    "realtime",
+                    format!("WebSocket connection failed: {error:#}"),
+                );
+                diagnostics::set_realtime_connected(false);
+                self.schedule_reconnect();
+            }
+        }
+    }
+
+    async fn observe_connection(&mut self) {
+        let Some(client) = self.realtime.as_mut() else {
+            diagnostics::set_observing(false);
+            return;
+        };
+        let was_observing = diagnostics::runtime_snapshot().observing;
+
+        if client.observe().await.is_err() {
+            diagnostics::warn(
+                "realtime",
+                "OBSERVING transition failed; connection will be re-established",
+            );
+            diagnostics::set_realtime_connected(false);
+            diagnostics::set_observing(false);
+            self.clear_realtime_connection();
+            self.schedule_reconnect();
+            return;
+        }
+
+        diagnostics::set_observing(true);
+
+        if !was_observing {
+            diagnostics::info("realtime", "realtime-service acknowledged OBSERVING");
+        }
+    }
+
+    async fn deliver_pending_reports(&mut self) -> Result<()> {
+        for _ in 0..MAX_REPORTS_PER_TICK {
+            let Some(pending) = self.spool.front().cloned() else {
+                return Ok(());
+            };
+            let Some(client) = self.realtime.as_mut() else {
+                return Ok(());
+            };
+            let report = pending.to_event_report();
+
+            if let Err(error) = client.report(&report).await {
+                diagnostics::warn(
+                    "events",
+                    format!("Event delivery failed and will retry after reconnect: {error:#}"),
+                );
+                diagnostics::set_realtime_connected(false);
+                diagnostics::set_observing(false);
+                self.clear_realtime_connection();
+                self.schedule_reconnect();
+                return Ok(());
+            }
+
+            diagnostics::debug(
+                "events",
+                format!("realtime-service queued report {}", pending.message_id),
+            );
+
+            self.spool
+                .acknowledge(pending.message_id)
+                .await
+                .context("failed to persist report acknowledgement")?;
+        }
+
+        Ok(())
+    }
+
+    async fn pause_connection(&mut self) {
+        let was_observing = diagnostics::runtime_snapshot().observing;
+        diagnostics::set_observing(false);
+
+        let Some(client) = self.realtime.as_mut() else {
+            return;
+        };
+
+        if client.pause().await.is_err() {
+            diagnostics::set_realtime_connected(false);
+            self.clear_realtime_connection();
+            self.schedule_reconnect();
+            return;
+        }
+
+        if was_observing {
+            diagnostics::info("realtime", "realtime-service acknowledged PAUSED");
+        }
+    }
+
+    async fn try_apply_update(&mut self) -> bool {
+        let Some(mut coordinator) = self.update_coordinator.take() else {
+            return false;
+        };
+        let had_pending_update = coordinator.has_pending_update();
+        let poll_result = coordinator
+            .poll(self.realtime.as_mut(), self.spool.is_empty())
+            .await;
+
+        let request = match poll_result {
+            Ok(Some(request)) => request,
+            Ok(None) => {
+                self.update_coordinator = Some(coordinator);
+                return false;
+            }
+            Err(error) => {
+                diagnostics::debug(
+                    "update",
+                    format!("Update poll deferred after error: {error:#}"),
+                );
+                coordinator.defer_after_error();
+                self.update_coordinator = Some(coordinator);
+
+                if had_pending_update {
+                    diagnostics::set_realtime_connected(false);
+                    diagnostics::set_observing(false);
+                    self.clear_realtime_connection();
+                    self.schedule_reconnect();
+                }
+
+                return false;
+            }
+        };
+
+        let handoff_result =
+            UpdateHandoff::start(request.staged_executable(), request.expected_sha256());
+
+        if let Err(error) = handoff_result {
+            diagnostics::warn("update", format!("Updater handoff failed: {error:#}"));
+            coordinator.restore_handoff(request);
+            self.update_coordinator = Some(coordinator);
+            return false;
+        }
+
+        diagnostics::set_realtime_connected(false);
+        diagnostics::set_observing(false);
+        self.clear_realtime_connection();
+
+        true
+    }
+
+    fn reset_reconnect_backoff_if_stable(&mut self) {
+        let Some(connected_at) = self.realtime_connected_at else {
+            return;
+        };
+
+        if !connection_is_stable(connected_at, Instant::now()) {
+            return;
+        }
+
+        if self.reconnect_delay != self.config.reconnect_initial_delay {
+            diagnostics::debug(
+                "realtime",
+                "WebSocket remained stable; reconnect backoff reset",
+            );
+        }
+
+        self.reconnect_delay = self.config.reconnect_initial_delay;
+        self.realtime_connected_at = None;
+    }
+
+    fn clear_realtime_connection(&mut self) {
+        self.realtime = None;
+        self.realtime_connected_at = None;
+    }
+
+    fn schedule_reconnect(&mut self) {
+        let now = Instant::now();
+
+        diagnostics::debug(
+            "realtime",
+            format!("Next WebSocket reconnect in {:?}", self.reconnect_delay),
+        );
+
+        self.next_reconnect_at = now + self.reconnect_delay;
+        self.reconnect_delay = self
+            .reconnect_delay
+            .saturating_mul(2)
+            .min(self.config.reconnect_max_delay);
+    }
+
+    async fn shutdown(&mut self) {
+        let pending_events = self.parser.flush();
+        let _ = self.enqueue_events(pending_events).await;
+
+        let Some(mut client) = self.realtime.take() else {
+            return;
+        };
+
+        let _ = client.pause().await;
+        let _ = client.close().await;
+        diagnostics::set_realtime_connected(false);
+        diagnostics::set_observing(false);
+    }
+}
+
+fn connection_is_stable(connected_at: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(connected_at) >= RECONNECT_STABILITY_WINDOW
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::{RECONNECT_STABILITY_WINDOW, connection_is_stable};
+
+    #[test]
+    fn reconnect_backoff_does_not_reset_for_short_lived_connection() {
+        let connected_at = Instant::now();
+        let now = connected_at + RECONNECT_STABILITY_WINDOW - Duration::from_millis(1);
+
+        assert!(!connection_is_stable(connected_at, now));
+    }
+
+    #[test]
+    fn reconnect_backoff_resets_after_stability_window() {
+        let connected_at = Instant::now();
+        let now = connected_at + RECONNECT_STABILITY_WINDOW;
+
+        assert!(connection_is_stable(connected_at, now));
+    }
+}

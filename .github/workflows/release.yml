@@ -1,0 +1,401 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: collector-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  LINUXDEPLOY_VERSION: 1-alpha-20250213-2
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag and update public key
+        id: release
+        shell: bash
+        env:
+          UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+
+          tag="${GITHUB_REF_NAME}"
+
+          if [[ ! "$tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Release tag must use stable vMAJOR.MINOR.PATCH format."
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "Collector releases must point to a commit contained in main."
+            exit 1
+          fi
+
+          version="${tag#v}"
+          cargo_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)"
+
+          if [ "$version" != "$cargo_version" ]; then
+            echo "Release tag version $version does not match Cargo.toml version $cargo_version."
+            exit 1
+          fi
+
+          if [ -z "${UPDATE_PUBLIC_KEY:-}" ]; then
+            echo "MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY repository variable is required."
+            exit 1
+          fi
+
+          public_key_bytes="$(printf '%s' "$UPDATE_PUBLIC_KEY" | base64 --decode | wc -c | tr -d ' ')"
+
+          if [ "$public_key_bytes" != "32" ]; then
+            echo "MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY must be base64 for exactly 32 raw Ed25519 public-key bytes."
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
+      WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.MNEMOS_WINDOWS_CODE_SIGNING_PFX_BASE64 }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.MNEMOS_WINDOWS_CODE_SIGNING_PFX_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup target add x86_64-pc-windows-msvc --toolchain 1.98.0
+
+      - name: Build Windows application
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.98.0 build \
+            --locked \
+            --release \
+            --target x86_64-pc-windows-msvc
+
+          mkdir -p dist
+          cp \
+            target/x86_64-pc-windows-msvc/release/mnemos-collector.exe \
+            dist/Mnemos-Collector-Windows-x86_64.exe
+
+      - name: Authenticode sign Windows application when configured
+        shell: powershell
+        run: |
+          $certificate = $env:WINDOWS_CERTIFICATE_PFX_BASE64
+          $password = $env:WINDOWS_CERTIFICATE_PASSWORD
+
+          if ([string]::IsNullOrWhiteSpace($certificate) -and [string]::IsNullOrWhiteSpace($password)) {
+            Write-Host "Windows Authenticode certificate is not configured; publishing the verified unsigned executable."
+            exit 0
+          }
+
+          if ([string]::IsNullOrWhiteSpace($certificate) -or [string]::IsNullOrWhiteSpace($password)) {
+            throw "Both MNEMOS_WINDOWS_CODE_SIGNING_PFX_BASE64 and MNEMOS_WINDOWS_CODE_SIGNING_PFX_PASSWORD must be configured together."
+          }
+
+          $pfxPath = Join-Path $env:RUNNER_TEMP "mnemos-windows-signing.pfx"
+          [System.IO.File]::WriteAllBytes(
+            $pfxPath,
+            [System.Convert]::FromBase64String($certificate)
+          )
+
+          try {
+            $signtool = (Get-Command signtool.exe -ErrorAction Stop).Source
+            & $signtool sign `
+              /fd SHA256 `
+              /td SHA256 `
+              /tr http://timestamp.digicert.com `
+              /f $pfxPath `
+              /p $password `
+              dist\Mnemos-Collector-Windows-x86_64.exe
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "signtool failed with exit code $LASTEXITCODE"
+            }
+
+            & $signtool verify /pa /v dist\Mnemos-Collector-Windows-x86_64.exe
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "Authenticode verification failed with exit code $LASTEXITCODE"
+            }
+          }
+          finally {
+            Remove-Item $pfxPath -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Verify Windows artifact
+        shell: bash
+        run: test -s dist/Mnemos-Collector-Windows-x86_64.exe
+
+      - name: Upload Windows release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: collector-release-windows
+          path: dist/Mnemos-Collector-Windows-x86_64.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  linux:
+    needs: prepare
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    env:
+      MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install packaging dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            desktop-file-utils \
+            dpkg-dev \
+            librsvg2-bin \
+            patchelf
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup target add x86_64-unknown-linux-gnu --toolchain 1.98.0
+
+      - name: Build Linux Collector
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.98.0 build \
+            --locked \
+            --release \
+            --target x86_64-unknown-linux-gnu
+
+      - name: Install pinned linuxdeploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tools
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --output tools/linuxdeploy-x86_64.AppImage \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/linuxdeploy-x86_64.AppImage"
+          chmod 0755 tools/linuxdeploy-x86_64.AppImage
+
+      - name: Package Linux applications
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/package-linux.sh \
+            target/x86_64-unknown-linux-gnu/release/mnemos-collector \
+            "$VERSION" \
+            dist \
+            tools/linuxdeploy-x86_64.AppImage
+
+      - name: Verify Linux artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s dist/Mnemos-Collector-Linux-x86_64.AppImage
+          test -s dist/Mnemos-Collector-Linux-amd64.deb
+          test -s dist/mnemos-collector-update-linux-x86_64
+          dpkg-deb --info dist/Mnemos-Collector-Linux-amd64.deb > /dev/null
+
+      - name: Upload Linux release artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: collector-release-linux
+          path: |
+            dist/Mnemos-Collector-Linux-x86_64.AppImage
+            dist/Mnemos-Collector-Linux-amd64.deb
+            dist/mnemos-collector-update-linux-x86_64
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs:
+      - prepare
+      - windows
+      - linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
+      UPDATE_PRIVATE_KEY: ${{ secrets.MNEMOS_COLLECTOR_UPDATE_PRIVATE_KEY_PEM }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: collector-release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify update signing key pair
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${UPDATE_PRIVATE_KEY:-}" ]; then
+            echo "MNEMOS_COLLECTOR_UPDATE_PRIVATE_KEY_PEM Actions secret is required."
+            exit 1
+          fi
+
+          key_file="$RUNNER_TEMP/mnemos-collector-update-key.pem"
+          printf '%s' "$UPDATE_PRIVATE_KEY" > "$key_file"
+          chmod 600 "$key_file"
+
+          derived_public_key="$(
+            openssl pkey -in "$key_file" -pubout -outform DER \
+              | tail -c 32 \
+              | base64 \
+              | tr -d '\r\n'
+          )"
+
+          if [ "$derived_public_key" != "$UPDATE_PUBLIC_KEY" ]; then
+            echo "Collector update private key does not match MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY."
+            exit 1
+          fi
+
+          echo "UPDATE_KEY_FILE=$key_file" >> "$GITHUB_ENV"
+
+      - name: Build signed update manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          manifest="$(jq -n --arg version "$VERSION" '{version:$version,artifacts:{}}')"
+
+          sign_artifact() {
+            platform="$1"
+            asset="$2"
+            asset_path="dist/$asset"
+
+            if [ ! -f "$asset_path" ]; then
+              echo "Missing release artifact: $asset_path"
+              exit 1
+            fi
+
+            sha256="$(sha256sum "$asset_path" | awk '{print $1}')"
+            payload="$RUNNER_TEMP/update-payload-$platform.txt"
+            signature_file="$RUNNER_TEMP/update-signature-$platform.bin"
+
+            printf 'mnemos-collector-update-v1\n%s\n%s\n%s\n' \
+              "$VERSION" \
+              "$platform" \
+              "$sha256" \
+              > "$payload"
+
+            openssl pkeyutl \
+              -sign \
+              -rawin \
+              -inkey "$UPDATE_KEY_FILE" \
+              -in "$payload" \
+              -out "$signature_file"
+
+            signature="$(base64 < "$signature_file" | tr -d '\r\n')"
+            url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$asset"
+
+            manifest="$(
+              jq \
+                --arg platform "$platform" \
+                --arg url "$url" \
+                --arg sha256 "$sha256" \
+                --arg signature "$signature" \
+                '.artifacts[$platform] = {url:$url,sha256:$sha256,signature:$signature}' \
+                <<< "$manifest"
+            )"
+          }
+
+          sign_artifact \
+            linux-x86_64 \
+            mnemos-collector-update-linux-x86_64
+          sign_artifact \
+            windows-x86_64 \
+            Mnemos-Collector-Windows-x86_64.exe
+
+          printf '%s\n' "$manifest" > dist/manifest.json
+          jq -e \
+            --arg version "$VERSION" \
+            '.version == $version and (.artifacts | length) == 2' \
+            dist/manifest.json \
+            > /dev/null
+
+      - name: Build SHA-256 checksum file
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd dist
+            sha256sum \
+              Mnemos-Collector-Windows-x86_64.exe \
+              Mnemos-Collector-Linux-x86_64.AppImage \
+              Mnemos-Collector-Linux-amd64.deb \
+              mnemos-collector-update-linux-x86_64 \
+              manifest.json \
+              > SHA256SUMS.txt
+          )
+
+      - name: Publish GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          assets=(
+            dist/Mnemos-Collector-Windows-x86_64.exe
+            dist/Mnemos-Collector-Linux-x86_64.AppImage
+            dist/Mnemos-Collector-Linux-amd64.deb
+            dist/mnemos-collector-update-linux-x86_64
+            dist/manifest.json
+            dist/SHA256SUMS.txt
+          )
+
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create \
+              "$GITHUB_REF_NAME" \
+              "${assets[@]}" \
+              --verify-tag \
+              --title "Mnemos Collector $VERSION" \
+              --generate-notes
+          fi
+
+      - name: Remove update signing key
+        if: always()
+        shell: bash
+        run: rm -f "${UPDATE_KEY_FILE:-}"

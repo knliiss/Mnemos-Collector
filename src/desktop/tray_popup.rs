@@ -1,0 +1,551 @@
+use std::ffi::c_void;
+use std::io;
+use std::ptr::{null, null_mut};
+
+use anyhow::{Context, Result};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{
+    BeginPaint, CreatePen, CreateRoundRectRgn, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
+    GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+    PAINTSTRUCT, RoundRect, SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TextOutW,
+    UpdateWindow,
+};
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, ReleaseCapture, SetCapture, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowW, GWLP_USERDATA,
+    GetCursorPos, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect, IDC_ARROW, KillTimer,
+    LoadCursorW, RegisterClassW, SM_CXSCREEN, SM_CYSCREEN, SW_RESTORE, SW_SHOWNOACTIVATE,
+    SetCursor, SetForegroundWindow, SetTimer, SetWindowLongPtrW, ShowWindow, WM_CANCELMODE,
+    WM_CAPTURECHANGED, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEMOVE, WM_NCCREATE,
+    WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WM_TIMER, WNDCLASSW, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+};
+
+use super::mascot;
+use super::theme;
+
+const CLASS_NAME: &str = "MnemosCollectorTrayPopup";
+const WIDTH: i32 = 144;
+const HEIGHT: i32 = 74;
+const MARGIN: i32 = 6;
+const ITEM_HEIGHT: i32 = 29;
+const ITEM_GAP: i32 = 4;
+const POPUP_RADIUS: i32 = 24;
+const ITEM_RADIUS: i32 = 17;
+const SCREEN_EDGE_MARGIN: i32 = 8;
+const CURSOR_GAP: i32 = 6;
+const POINTER_WATCH_TIMER: usize = 1;
+const POINTER_WATCH_INTERVAL_MS: u32 = 16;
+
+struct TrayPopupState {
+    owner: HWND,
+    font: *mut c_void,
+    hover: Option<TrayItem>,
+    closing: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TrayItem {
+    Open,
+    Exit,
+}
+
+pub(super) fn show(owner: HWND, font: *mut c_void) -> Result<()> {
+    unsafe {
+        let instance = GetModuleHandleW(null());
+
+        if instance.is_null() {
+            return Err(io::Error::last_os_error())
+                .context("failed to get tray popup module handle");
+        }
+
+        let class_name = wide(CLASS_NAME);
+        let existing = FindWindowW(class_name.as_ptr(), null());
+
+        if !existing.is_null() {
+            DestroyWindow(existing);
+        }
+
+        let cursor = LoadCursorW(null_mut(), IDC_ARROW);
+        let window_class = WNDCLASSW {
+            lpfnWndProc: Some(window_proc),
+            hInstance: instance,
+            hCursor: cursor,
+            lpszClassName: class_name.as_ptr(),
+            ..std::mem::zeroed()
+        };
+
+        if RegisterClassW(&window_class) == 0 {
+            let error = io::Error::last_os_error();
+
+            if error.raw_os_error() != Some(1410) {
+                return Err(error).context("failed to register tray popup class");
+            }
+        }
+
+        let mut cursor_position = POINT { x: 0, y: 0 };
+        GetCursorPos(&mut cursor_position);
+
+        let work_area = monitor_work_area(cursor_position);
+        let popup_position = popup_position(cursor_position, work_area);
+
+        let state = Box::new(TrayPopupState {
+            owner,
+            font,
+            hover: None,
+            closing: false,
+        });
+        let state_ptr = Box::into_raw(state);
+
+        let popup = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+            class_name.as_ptr(),
+            null(),
+            WS_POPUP,
+            popup_position.x,
+            popup_position.y,
+            WIDTH,
+            HEIGHT,
+            null_mut(),
+            null_mut(),
+            instance,
+            state_ptr.cast::<c_void>(),
+        );
+
+        if popup.is_null() {
+            drop(Box::from_raw(state_ptr));
+            return Err(io::Error::last_os_error()).context("failed to create tray popup");
+        }
+
+        let region = CreateRoundRectRgn(0, 0, WIDTH + 1, HEIGHT + 1, POPUP_RADIUS, POPUP_RADIUS);
+
+        if !region.is_null() {
+            SetWindowRgn(popup, region, 1);
+        }
+
+        ShowWindow(popup, SW_SHOWNOACTIVATE);
+        UpdateWindow(popup);
+        SetTimer(popup, POINTER_WATCH_TIMER, POINTER_WATCH_INTERVAL_MS, None);
+        SetCapture(popup);
+
+        if !cursor.is_null() {
+            SetCursor(cursor);
+        }
+    }
+
+    Ok(())
+}
+
+unsafe extern "system" fn window_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if message == WM_NCCREATE {
+        let create = lparam as *const CREATESTRUCTW;
+        let state = unsafe { (*create).lpCreateParams as *mut TrayPopupState };
+
+        unsafe {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize);
+        }
+    }
+
+    let state = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut TrayPopupState };
+
+    match message {
+        WM_PAINT if !state.is_null() => {
+            unsafe {
+                paint(hwnd, &*state);
+            }
+            return 0;
+        }
+        WM_ERASEBKGND => return 1,
+        WM_SETCURSOR => {
+            unsafe {
+                let cursor = LoadCursorW(null_mut(), IDC_ARROW);
+
+                if !cursor.is_null() {
+                    SetCursor(cursor);
+                }
+            }
+
+            return 1;
+        }
+        WM_MOUSEMOVE if !state.is_null() => {
+            let x = low_word(lparam as usize) as i16 as i32;
+            let y = high_word(lparam as usize) as i16 as i32;
+            let hover = hit_test(x, y);
+
+            unsafe {
+                if (*state).hover != hover {
+                    (*state).hover = hover;
+                    InvalidateRect(hwnd, null(), 0);
+                }
+            }
+
+            return 0;
+        }
+        WM_TIMER if wparam == POINTER_WATCH_TIMER && !state.is_null() => {
+            if unsafe { pointer_pressed_outside(hwnd) } {
+                unsafe {
+                    close_popup(hwnd, state);
+                }
+            }
+            return 0;
+        }
+        WM_LBUTTONDOWN if !state.is_null() => {
+            let x = low_word(lparam as usize) as i16 as i32;
+            let y = high_word(lparam as usize) as i16 as i32;
+            let item = hit_test(x, y);
+            let owner = unsafe { (*state).owner };
+
+            unsafe {
+                close_popup(hwnd, state);
+            }
+
+            match item {
+                Some(TrayItem::Open) => unsafe {
+                    ShowWindow(owner, SW_RESTORE);
+                    SetForegroundWindow(owner);
+                },
+                Some(TrayItem::Exit) => unsafe {
+                    DestroyWindow(owner);
+                },
+                None => {}
+            }
+
+            return 0;
+        }
+        WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_CANCELMODE => {
+            unsafe {
+                close_popup(hwnd, state);
+            }
+            return 0;
+        }
+        WM_CAPTURECHANGED => {
+            if !state.is_null() && unsafe { !(*state).closing } {
+                unsafe {
+                    close_popup(hwnd, state);
+                }
+            }
+            return 0;
+        }
+        WM_NCDESTROY => {
+            unsafe {
+                KillTimer(hwnd, POINTER_WATCH_TIMER);
+                ReleaseCapture();
+
+                if !state.is_null() {
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                    drop(Box::from_raw(state));
+                }
+            }
+
+            return 0;
+        }
+        _ => {}
+    }
+
+    unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
+
+unsafe fn close_popup(hwnd: HWND, state: *mut TrayPopupState) {
+    if state.is_null() || unsafe { (*state).closing } {
+        return;
+    }
+
+    unsafe {
+        (*state).closing = true;
+        KillTimer(hwnd, POINTER_WATCH_TIMER);
+        ReleaseCapture();
+        DestroyWindow(hwnd);
+    }
+}
+
+unsafe fn pointer_pressed_outside(hwnd: HWND) -> bool {
+    let mut cursor = POINT { x: 0, y: 0 };
+    let mut rect: RECT = unsafe { std::mem::zeroed() };
+
+    unsafe {
+        if GetCursorPos(&mut cursor) == 0 || GetWindowRect(hwnd, &mut rect) == 0 {
+            return false;
+        }
+    }
+
+    let pointer_pressed = unsafe {
+        GetAsyncKeyState(VK_LBUTTON as i32) < 0
+            || GetAsyncKeyState(VK_RBUTTON as i32) < 0
+            || GetAsyncKeyState(VK_MBUTTON as i32) < 0
+    };
+
+    pointer_pressed && !contains(rect, cursor.x, cursor.y)
+}
+
+unsafe fn paint(hwnd: HWND, state: &TrayPopupState) {
+    let mut paint: PAINTSTRUCT = unsafe { std::mem::zeroed() };
+    let hdc = unsafe { BeginPaint(hwnd, &mut paint) };
+    let client = RECT {
+        left: 0,
+        top: 0,
+        right: WIDTH,
+        bottom: HEIGHT,
+    };
+    let background = unsafe { CreateSolidBrush(theme::SURFACE) };
+
+    unsafe {
+        FillRect(hdc, &client, background);
+        DeleteObject(background);
+
+        draw_popup_border(hdc, client);
+        draw_item(hdc, open_rect(), TrayItem::Open, state.hover, state.font);
+        draw_item(hdc, exit_rect(), TrayItem::Exit, state.hover, state.font);
+
+        EndPaint(hwnd, &paint);
+    }
+}
+
+unsafe fn draw_popup_border(hdc: *mut c_void, rect: RECT) {
+    let brush = unsafe { CreateSolidBrush(theme::SURFACE) };
+    let pen = unsafe { CreatePen(0, 1, theme::LINE_STRONG) };
+    let previous_brush = unsafe { SelectObject(hdc, brush) };
+    let previous_pen = unsafe { SelectObject(hdc, pen) };
+
+    unsafe {
+        RoundRect(
+            hdc,
+            rect.left,
+            rect.top,
+            rect.right - 1,
+            rect.bottom - 1,
+            POPUP_RADIUS,
+            POPUP_RADIUS,
+        );
+        SelectObject(hdc, previous_pen);
+        SelectObject(hdc, previous_brush);
+        DeleteObject(pen);
+        DeleteObject(brush);
+    }
+}
+
+unsafe fn draw_item(
+    hdc: *mut c_void,
+    rect: RECT,
+    item: TrayItem,
+    hover: Option<TrayItem>,
+    font: *mut c_void,
+) {
+    if hover == Some(item) {
+        let fill = if item == TrayItem::Exit {
+            theme::DANGER_DIM
+        } else {
+            theme::SURFACE_RAISED
+        };
+        let border = if item == TrayItem::Exit {
+            theme::DANGER
+        } else {
+            theme::LINE_STRONG
+        };
+        let brush = unsafe { CreateSolidBrush(fill) };
+        let pen = unsafe { CreatePen(0, 1, border) };
+        let previous_brush = unsafe { SelectObject(hdc, brush) };
+        let previous_pen = unsafe { SelectObject(hdc, pen) };
+
+        unsafe {
+            RoundRect(
+                hdc,
+                rect.left,
+                rect.top,
+                rect.right,
+                rect.bottom,
+                ITEM_RADIUS,
+                ITEM_RADIUS,
+            );
+            SelectObject(hdc, previous_pen);
+            SelectObject(hdc, previous_brush);
+            DeleteObject(pen);
+            DeleteObject(brush);
+        }
+    }
+
+    unsafe {
+        SetBkMode(hdc, 1);
+        SelectObject(hdc, font);
+    }
+
+    match item {
+        TrayItem::Open => unsafe {
+            mascot::draw(hdc, rect.left + 7, rect.top + 5, 18);
+            draw_text(hdc, rect.left + 31, rect.top + 5, "Открыть", theme::TEXT);
+        },
+        TrayItem::Exit => unsafe {
+            draw_text(hdc, rect.left + 10, rect.top + 4, "×", theme::DANGER);
+            draw_text(hdc, rect.left + 31, rect.top + 5, "Выйти", theme::DANGER);
+        },
+    }
+}
+
+unsafe fn draw_text(hdc: *mut c_void, x: i32, y: i32, text: &str, color: u32) {
+    let text = text.encode_utf16().collect::<Vec<_>>();
+
+    unsafe {
+        SetTextColor(hdc, color);
+        TextOutW(hdc, x, y, text.as_ptr(), text.len() as i32);
+    }
+}
+
+fn monitor_work_area(cursor: POINT) -> RECT {
+    unsafe {
+        let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+
+        if !monitor.is_null() {
+            let mut info: MONITORINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+
+            if GetMonitorInfoW(monitor, &mut info) != 0 {
+                return info.rcWork;
+            }
+        }
+
+        RECT {
+            left: 0,
+            top: 0,
+            right: GetSystemMetrics(SM_CXSCREEN),
+            bottom: GetSystemMetrics(SM_CYSCREEN),
+        }
+    }
+}
+
+fn popup_position(cursor: POINT, work_area: RECT) -> POINT {
+    let min_x = work_area.left + SCREEN_EDGE_MARGIN;
+    let max_x = (work_area.right - WIDTH - SCREEN_EDGE_MARGIN).max(min_x);
+    let min_y = work_area.top + SCREEN_EDGE_MARGIN;
+    let max_y = (work_area.bottom - HEIGHT - SCREEN_EDGE_MARGIN).max(min_y);
+
+    POINT {
+        x: (cursor.x - WIDTH).clamp(min_x, max_x),
+        y: (cursor.y - HEIGHT - CURSOR_GAP).clamp(min_y, max_y),
+    }
+}
+
+fn hit_test(x: i32, y: i32) -> Option<TrayItem> {
+    if contains(open_rect(), x, y) {
+        return Some(TrayItem::Open);
+    }
+
+    if contains(exit_rect(), x, y) {
+        return Some(TrayItem::Exit);
+    }
+
+    None
+}
+
+fn open_rect() -> RECT {
+    RECT {
+        left: MARGIN,
+        top: MARGIN,
+        right: WIDTH - MARGIN,
+        bottom: MARGIN + ITEM_HEIGHT,
+    }
+}
+
+fn exit_rect() -> RECT {
+    RECT {
+        left: MARGIN,
+        top: MARGIN + ITEM_HEIGHT + ITEM_GAP,
+        right: WIDTH - MARGIN,
+        bottom: HEIGHT - MARGIN,
+    }
+}
+
+fn contains(rect: RECT, x: i32, y: i32) -> bool {
+    x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
+}
+
+fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+fn low_word(value: usize) -> u16 {
+    (value & 0xffff) as u16
+}
+
+fn high_word(value: usize) -> u16 {
+    ((value >> 16) & 0xffff) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use windows_sys::Win32::Foundation::{POINT, RECT};
+
+    use super::{CURSOR_GAP, HEIGHT, SCREEN_EDGE_MARGIN, WIDTH, contains, popup_position};
+
+    #[test]
+    fn popup_uses_the_monitor_work_area_for_negative_coordinates() {
+        let work_area = RECT {
+            left: -1920,
+            top: 0,
+            right: 0,
+            bottom: 1040,
+        };
+        let cursor = POINT { x: -40, y: 1000 };
+
+        let position = popup_position(cursor, work_area);
+
+        assert_eq!(position.x, -184);
+        assert_eq!(position.y, 920);
+    }
+
+    #[test]
+    fn popup_is_clamped_inside_monitor_work_area() {
+        let work_area = RECT {
+            left: 100,
+            top: 50,
+            right: 900,
+            bottom: 650,
+        };
+        let cursor = POINT { x: 105, y: 55 };
+
+        let position = popup_position(cursor, work_area);
+
+        assert_eq!(position.x, work_area.left + SCREEN_EDGE_MARGIN);
+        assert_eq!(position.y, work_area.top + SCREEN_EDGE_MARGIN);
+        assert!(position.x + WIDTH <= work_area.right - SCREEN_EDGE_MARGIN);
+        assert!(position.y + HEIGHT <= work_area.bottom - SCREEN_EDGE_MARGIN);
+    }
+
+    #[test]
+    fn popup_keeps_a_gap_above_the_cursor_when_space_allows() {
+        let work_area = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1040,
+        };
+        let cursor = POINT { x: 1000, y: 800 };
+
+        let position = popup_position(cursor, work_area);
+
+        assert_eq!(position.x, cursor.x - WIDTH);
+        assert_eq!(position.y + HEIGHT + CURSOR_GAP, cursor.y);
+    }
+
+    #[test]
+    fn popup_rectangle_contains_only_points_inside_its_bounds() {
+        let rect = RECT {
+            left: 100,
+            top: 200,
+            right: 244,
+            bottom: 274,
+        };
+
+        assert!(contains(rect, 100, 200));
+        assert!(contains(rect, 243, 273));
+        assert!(!contains(rect, 99, 200));
+        assert!(!contains(rect, 244, 273));
+        assert!(!contains(rect, 243, 274));
+    }
+}
