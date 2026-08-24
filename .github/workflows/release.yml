@@ -4,9 +4,15 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Stable release tag to publish
+        required: true
+        type: string
 
 concurrency:
-  group: collector-release-${{ github.ref }}
+  group: collector-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -20,6 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      release_sha: ${{ steps.release.outputs.release_sha }}
 
     steps:
       - name: Checkout
@@ -31,24 +39,37 @@ jobs:
         id: release
         shell: bash
         env:
+          REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
         run: |
           set -euo pipefail
 
-          tag="${GITHUB_REF_NAME}"
+          tag="$REQUESTED_TAG"
 
           if [[ ! "$tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
             echo "Release tag must use stable vMAJOR.MINOR.PATCH format."
             exit 1
           fi
 
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+          git fetch origin main --tags --force
+          release_sha="$(git rev-list -n 1 "$tag" 2>/dev/null || true)"
+
+          if [ -z "$release_sha" ]; then
+            echo "Release tag $tag does not exist."
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "$release_sha" refs/remotes/origin/main; then
             echo "Collector releases must point to a commit contained in main."
             exit 1
           fi
 
           version="${tag#v}"
-          cargo_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)"
+          cargo_version="$(
+            git show "$release_sha:Cargo.toml" \
+              | sed -n 's/^version = "\([^"]*\)"$/\1/p' \
+              | head -n 1
+          )"
 
           if [ "$version" != "$cargo_version" ]; then
             echo "Release tag version $version does not match Cargo.toml version $cargo_version."
@@ -68,6 +89,8 @@ jobs:
           fi
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
 
   windows:
     needs: prepare
@@ -79,8 +102,10 @@ jobs:
       WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.MNEMOS_WINDOWS_CODE_SIGNING_PFX_PASSWORD }}
 
     steps:
-      - name: Checkout
+      - name: Checkout release source
         uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
 
       - name: Install Rust
         shell: bash
@@ -168,8 +193,10 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
 
     steps:
-      - name: Checkout
+      - name: Checkout release source
         uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
 
       - name: Install packaging dependencies
         shell: bash
@@ -250,13 +277,16 @@ jobs:
 
     env:
       GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
       UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
       UPDATE_PRIVATE_KEY: ${{ secrets.MNEMOS_COLLECTOR_UPDATE_PRIVATE_KEY_PEM }}
       VERSION: ${{ needs.prepare.outputs.version }}
 
     steps:
-      - name: Checkout
+      - name: Checkout release source
         uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
 
       - name: Download release artifacts
         uses: actions/download-artifact@v8
@@ -328,7 +358,7 @@ jobs:
               -out "$signature_file"
 
             signature="$(base64 < "$signature_file" | tr -d '\r\n')"
-            url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$asset"
+            url="https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$asset"
 
             manifest="$(
               jq \
@@ -384,11 +414,11 @@ jobs:
             dist/SHA256SUMS.txt
           )
 
-          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
           else
             gh release create \
-              "$GITHUB_REF_NAME" \
+              "$RELEASE_TAG" \
               "${assets[@]}" \
               --verify-tag \
               --title "Mnemos Collector $VERSION" \
