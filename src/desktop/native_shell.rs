@@ -20,13 +20,15 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow,
     DispatchMessageW, ES_AUTOHSCROLL, ES_PASSWORD, GWLP_USERDATA, GetClientRect, GetMessageW,
-    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW, LoadCursorW, MINMAXINFO,
-    MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
-    SW_HIDE, SW_RESTORE, SW_SHOW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW,
-    SetWindowTextW, ShowWindow, TranslateMessage, WM_APP, WM_CLOSE, WM_CTLCOLOREDIT, WM_DESTROY,
-    WM_ERASEBKGND, WM_GETMINMAXINFO, WM_LBUTTONUP, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT,
-    WM_RBUTTONUP, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN,
-    WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
+    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HTBOTTOM, HTBOTTOMLEFT,
+    HTBOTTOMRIGHT, HTCAPTION, HTCLIENT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, IDC_ARROW,
+    LoadCursorW, MINMAXINFO, MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage,
+    RegisterClassW, SIZE_MINIMIZED, SW_HIDE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, SendMessageW,
+    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage,
+    WM_APP, WM_CLOSE, WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO,
+    WM_LBUTTONUP, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONUP, WM_SETFONT,
+    WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_MAXIMIZEBOX, WS_MINIMIZEBOX,
+    WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE,
 };
 use zeroize::Zeroizing;
 
@@ -53,6 +55,7 @@ const WM_TRAY: u32 = WM_APP + 1;
 const WM_ACTIVATION_RESULT: u32 = WM_APP + 2;
 const WM_COLLECTOR_STOPPED: u32 = WM_APP + 3;
 const TRAY_ID: u32 = 1;
+const RESIZE_BORDER: i32 = 7;
 const DWM_WINDOW_CORNER_PREFERENCE_ATTRIBUTE: u32 = 33;
 const DWM_WINDOW_CORNER_PREFERENCE_ROUND: u32 = 2;
 
@@ -98,11 +101,16 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
             0,
             class_name.as_ptr(),
             title.as_ptr(),
-            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+            WS_POPUP
+                | WS_THICKFRAME
+                | WS_SYSMENU
+                | WS_MINIMIZEBOX
+                | WS_MAXIMIZEBOX
+                | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            860,
-            640,
+            820,
+            610,
             null_mut(),
             null_mut(),
             instance,
@@ -199,14 +207,14 @@ impl DesktopWindow {
     }
 
     unsafe fn initialize_controls(&mut self, hwnd: HWND, instance: *mut c_void) -> Result<()> {
-        let ui = wide("Segoe UI Variable Text");
-        let display = wide("Segoe UI Variable Display");
+        let ui = wide("Segoe UI");
+        let display = wide("Segoe UI");
         let mono = wide("Cascadia Mono");
 
         self.ui_font =
-            unsafe { CreateFontW(-16, 0, 0, 0, 500, 0, 0, 0, 1, 0, 0, 5, 0, ui.as_ptr()) };
+            unsafe { CreateFontW(-16, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, ui.as_ptr()) };
         self.title_font =
-            unsafe { CreateFontW(-29, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, display.as_ptr()) };
+            unsafe { CreateFontW(-29, 0, 0, 0, 750, 0, 0, 0, 1, 0, 0, 5, 0, display.as_ptr()) };
         self.section_font =
             unsafe { CreateFontW(-21, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, display.as_ptr()) };
         self.mono_font =
@@ -483,6 +491,20 @@ impl DesktopWindow {
     fn click(&mut self, hwnd: HWND, x: i32, y: i32) {
         let layout = window_layout(hwnd, self.provisioned);
 
+        if layout.window_close.contains(x, y) {
+            unsafe {
+                ShowWindow(hwnd, SW_HIDE);
+            }
+            return;
+        }
+
+        if layout.window_minimize.contains(x, y) {
+            unsafe {
+                ShowWindow(hwnd, SW_MINIMIZE);
+            }
+            return;
+        }
+
         if layout.debug_toggle.contains(x, y) {
             diagnostics::set_debug_enabled(!diagnostics::debug_enabled());
             self.invalidate(hwnd);
@@ -556,6 +578,17 @@ unsafe extern "system" fn window_proc(
             }
         }
         WM_ERASEBKGND => return 1,
+        WM_NCHITTEST if !state.is_null() => {
+            let mut point = POINT {
+                x: low_word(lparam as usize) as i16 as i32,
+                y: high_word(lparam as usize) as i16 as i32,
+            };
+
+            unsafe {
+                ScreenToClient(hwnd, &mut point);
+                return hit_test_window(hwnd, (*state).provisioned, point);
+            }
+        }
         WM_GETMINMAXINFO => {
             if lparam != 0 {
                 let limits = unsafe { &mut *(lparam as *mut MINMAXINFO) };
@@ -668,6 +701,60 @@ unsafe extern "system" fn window_proc(
     }
 
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
+
+fn hit_test_window(hwnd: HWND, provisioned: bool, point: POINT) -> LRESULT {
+    let mut client: RECT = unsafe { std::mem::zeroed() };
+
+    unsafe {
+        GetClientRect(hwnd, &mut client);
+    }
+
+    let width = client.right - client.left;
+    let height = client.bottom - client.top;
+    let left = point.x < RESIZE_BORDER;
+    let right = point.x >= width - RESIZE_BORDER;
+    let top = point.y < RESIZE_BORDER;
+    let bottom = point.y >= height - RESIZE_BORDER;
+
+    if top && left {
+        return HTTOPLEFT as isize;
+    }
+    if top && right {
+        return HTTOPRIGHT as isize;
+    }
+    if bottom && left {
+        return HTBOTTOMLEFT as isize;
+    }
+    if bottom && right {
+        return HTBOTTOMRIGHT as isize;
+    }
+    if left {
+        return HTLEFT as isize;
+    }
+    if right {
+        return HTRIGHT as isize;
+    }
+    if top {
+        return HTTOP as isize;
+    }
+    if bottom {
+        return HTBOTTOM as isize;
+    }
+
+    let layout = view::layout(width, height, provisioned);
+
+    if layout.window_minimize.contains(point.x, point.y)
+        || layout.window_close.contains(point.x, point.y)
+    {
+        return HTCLIENT as isize;
+    }
+
+    if layout.title_bar.contains(point.x, point.y) {
+        return HTCAPTION as isize;
+    }
+
+    HTCLIENT as isize
 }
 
 async fn provision_current_installation(token: &str, device_name: &str) -> Result<Option<String>> {
