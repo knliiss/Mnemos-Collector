@@ -9,8 +9,9 @@ use windows_sys::Win32::Graphics::Dwm::{
     DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, InvalidateRect, PAINTSTRUCT,
-    SetBkColor, SetTextColor, UpdateWindow,
+    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, FillRect, InvalidateRect,
+    PAINTSTRUCT, SelectObject, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT, TextOutW,
+    UpdateWindow,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
@@ -18,17 +19,19 @@ use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CREATESTRUCTW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyMenu, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE,
-    ES_PASSWORD, ES_READONLY, GWLP_USERDATA, GetClientRect, GetCursorPos, GetMessageW,
-    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW, IDI_APPLICATION,
-    LoadCursorW, LoadIconW, MF_STRING, MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage,
-    RegisterClassW, SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW, SendMessageW,
-    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TPM_BOTTOMALIGN,
-    TPM_LEFTALIGN, TrackPopupMenu, TranslateMessage, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT,
-    WM_CTLCOLORSTATIC, WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONUP, WM_NCCREATE, WM_PAINT,
-    WM_RBUTTONUP, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN,
-    WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    AppendMenuW, CREATESTRUCTW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DRAWITEMSTRUCT,
+    DefWindowProcW, DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL,
+    ES_AUTOVSCROLL, ES_MULTILINE, ES_PASSWORD, ES_READONLY, GWLP_USERDATA, GetClientRect,
+    GetCursorPos, GetMessageW, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW,
+    IDC_ARROW, LoadCursorW, MEASUREITEMSTRUCT, MF_OWNERDRAW, MIM_BACKGROUND, MENUINFO, MSG,
+    MessageBoxW, MoveWindow, ODS_SELECTED, PostMessageW, PostQuitMessage, RegisterClassW,
+    SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW, SendMessageW, SetForegroundWindow, SetMenuInfo,
+    SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP, WM_CLOSE,
+    WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONUP,
+    WM_MEASUREITEM, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_SIZE, WM_TIMER,
+    WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
+    WS_VSCROLL,
 };
 use zeroize::Zeroizing;
 
@@ -39,6 +42,7 @@ use crate::provisioning::{ProvisioningClient, default_device_name};
 use crate::security::CredentialStore;
 
 use super::DesktopLaunchContext;
+use super::mascot;
 use super::theme;
 use super::view::{self, Fonts, Layout, ViewState};
 
@@ -50,12 +54,17 @@ const EM_GETSEL_MESSAGE: u32 = 0x00B0;
 const EM_SETSEL_MESSAGE: u32 = 0x00B1;
 const EM_SCROLLCARET_MESSAGE: u32 = 0x00B7;
 const EM_REPLACESEL_MESSAGE: u32 = 0x00C2;
+const WM_SETICON_MESSAGE: u32 = 0x0080;
+const ICON_SMALL_VALUE: usize = 0;
+const ICON_BIG_VALUE: usize = 1;
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_ACTIVATION_RESULT: u32 = WM_APP + 2;
 const WM_COLLECTOR_STOPPED: u32 = WM_APP + 3;
 const TRAY_ID: u32 = 1;
 const MENU_OPEN: usize = 4101;
 const MENU_EXIT: usize = 4102;
+const TRAY_MENU_WIDTH: u32 = 248;
+const TRAY_MENU_ITEM_HEIGHT: u32 = 44;
 
 pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
     unsafe {
@@ -66,12 +75,19 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
                 .context("failed to get collector module handle");
         }
 
+        let app_icon = mascot::create_icon(32);
+
+        if app_icon.is_null() {
+            return Err(io::Error::last_os_error()).context("failed to create collector app icon");
+        }
+
         let class_name = wide(CLASS_NAME);
         let cursor = LoadCursorW(null_mut(), IDC_ARROW);
         let window_class = WNDCLASSW {
             lpfnWndProc: Some(window_proc),
             hInstance: instance,
             hCursor: cursor,
+            hIcon: app_icon,
             lpszClassName: class_name.as_ptr(),
             ..std::mem::zeroed()
         };
@@ -80,11 +96,12 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
             let error = io::Error::last_os_error();
 
             if error.raw_os_error() != Some(1410) {
+                DestroyIcon(app_icon);
                 return Err(error).context("failed to register collector window class");
             }
         }
 
-        let state = Box::new(DesktopWindow::new(context, runtime));
+        let state = Box::new(DesktopWindow::new(context, runtime, app_icon));
         let state_ptr = Box::into_raw(state);
         let title = wide(WINDOW_TITLE);
         let hwnd = CreateWindowExW(
@@ -108,6 +125,8 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
         }
 
         apply_window_chrome(hwnd);
+        SendMessageW(hwnd, WM_SETICON_MESSAGE, ICON_SMALL_VALUE, app_icon as isize);
+        SendMessageW(hwnd, WM_SETICON_MESSAGE, ICON_BIG_VALUE, app_icon as isize);
         (*state_ptr).initialize_controls(hwnd, instance)?;
         (*state_ptr).install_tray_icon(hwnd)?;
         (*state_ptr).start_collector_if_ready(hwnd);
@@ -154,12 +173,17 @@ struct DesktopWindow {
     section_font: *mut c_void,
     mono_font: *mut c_void,
     edit_brush: *mut c_void,
+    app_icon: *mut c_void,
     last_log_text: String,
     last_runtime: RuntimeSnapshot,
 }
 
 impl DesktopWindow {
-    fn new(context: DesktopLaunchContext, runtime: Handle) -> Self {
+    fn new(
+        context: DesktopLaunchContext,
+        runtime: Handle,
+        app_icon: *mut c_void,
+    ) -> Self {
         Self {
             runtime,
             current_installation: context.current_installation,
@@ -176,6 +200,7 @@ impl DesktopWindow {
             section_font: null_mut(),
             mono_font: null_mut(),
             edit_brush: null_mut(),
+            app_icon,
             last_log_text: String::new(),
             last_runtime: diagnostics::runtime_snapshot(),
         }
@@ -238,15 +263,14 @@ impl DesktopWindow {
 
     unsafe fn install_tray_icon(&self, hwnd: HWND) -> Result<()> {
         let mut data: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
-        let icon = unsafe { LoadIconW(null_mut(), IDI_APPLICATION) };
 
         data.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
         data.hWnd = hwnd;
         data.uID = TRAY_ID;
         data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         data.uCallbackMessage = WM_TRAY;
-        data.hIcon = icon;
-        write_wide_array(&mut data.szTip, "Mnemos Collector");
+        data.hIcon = self.app_icon;
+        write_wide_array(&mut data.szTip, "Mnemos Collector · Master Sword");
 
         if unsafe { Shell_NotifyIconW(NIM_ADD, &data) } == 0 {
             return Err(io::Error::last_os_error()).context("failed to create collector tray icon");
@@ -400,12 +424,9 @@ impl DesktopWindow {
             return;
         }
 
-        let focused = unsafe { GetFocus() == self.logs_edit };
-        let selection = if focused {
-            Some(unsafe { edit_selection(self.logs_edit) })
-        } else {
-            None
-        };
+        if unsafe { GetFocus() == self.logs_edit } {
+            return;
+        }
 
         if let Some(appended) = text.strip_prefix(&self.last_log_text) {
             if !appended.is_empty() {
@@ -432,12 +453,8 @@ impl DesktopWindow {
         self.last_log_text = text;
 
         unsafe {
-            if let Some((start, end)) = selection {
-                SendMessageW(self.logs_edit, EM_SETSEL_MESSAGE, start, end);
-            } else {
-                select_log_end(self.logs_edit);
-                SendMessageW(self.logs_edit, EM_SCROLLCARET_MESSAGE, 0, 0);
-            }
+            select_log_end(self.logs_edit);
+            SendMessageW(self.logs_edit, EM_SCROLLCARET_MESSAGE, 0, 0);
         }
     }
 
@@ -510,25 +527,104 @@ impl DesktopWindow {
                 return;
             }
 
-            let open = wide("Открыть Mnemos Collector");
-            let exit = wide("Выйти");
+            let menu_brush = CreateSolidBrush(theme::SURFACE);
+            let menu_info = MENUINFO {
+                cbSize: std::mem::size_of::<MENUINFO>() as u32,
+                fMask: MIM_BACKGROUND,
+                hbrBack: menu_brush,
+                ..std::mem::zeroed()
+            };
 
-            AppendMenuW(menu, MF_STRING, MENU_OPEN, open.as_ptr());
-            AppendMenuW(menu, MF_STRING, MENU_EXIT, exit.as_ptr());
+            SetMenuInfo(menu, &menu_info);
+            AppendMenuW(menu, MF_OWNERDRAW, MENU_OPEN, null());
+            AppendMenuW(menu, MF_OWNERDRAW, MENU_EXIT, null());
 
             let mut cursor = POINT { x: 0, y: 0 };
             GetCursorPos(&mut cursor);
+
+            ShowWindow(hwnd, SW_HIDE);
             SetForegroundWindow(hwnd);
-            TrackPopupMenu(
+
+            let command = TrackPopupMenu(
                 menu,
-                TPM_BOTTOMALIGN | TPM_LEFTALIGN,
+                TPM_BOTTOMALIGN | TPM_LEFTALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD,
                 cursor.x,
                 cursor.y,
                 0,
                 hwnd,
                 null(),
             );
+
             DestroyMenu(menu);
+            DeleteObject(menu_brush);
+
+            match command as usize {
+                MENU_OPEN => {
+                    ShowWindow(hwnd, SW_RESTORE);
+                    SetForegroundWindow(hwnd);
+                }
+                MENU_EXIT => {
+                    DestroyWindow(hwnd);
+                }
+                _ => {
+                    ShowWindow(hwnd, SW_HIDE);
+                }
+            }
+        }
+    }
+
+    unsafe fn draw_tray_menu_item(&self, draw: &DRAWITEMSTRUCT) {
+        let selected = draw.itemState & ODS_SELECTED != 0;
+        let background = if selected {
+            theme::SURFACE_RAISED
+        } else {
+            theme::SURFACE
+        };
+        let brush = unsafe { CreateSolidBrush(background) };
+
+        unsafe {
+            FillRect(draw.hDC, &draw.rcItem, brush);
+            DeleteObject(brush);
+            SetBkMode(draw.hDC, TRANSPARENT as i32);
+            SelectObject(draw.hDC, self.ui_font);
+        }
+
+        let (label, color) = match draw.itemID as usize {
+            MENU_OPEN => ("Открыть Mnemos Collector", theme::TEXT),
+            MENU_EXIT => ("Выйти", theme::DANGER),
+            _ => return,
+        };
+
+        if draw.itemID as usize == MENU_OPEN {
+            unsafe {
+                mascot::draw(draw.hDC, draw.rcItem.left + 10, draw.rcItem.top + 6, 30);
+            }
+        } else {
+            let close = wide("×");
+
+            unsafe {
+                SetTextColor(draw.hDC, theme::DANGER);
+                TextOutW(
+                    draw.hDC,
+                    draw.rcItem.left + 18,
+                    draw.rcItem.top + 11,
+                    close.as_ptr(),
+                    1,
+                );
+            }
+        }
+
+        let label = wide(label);
+
+        unsafe {
+            SetTextColor(draw.hDC, color);
+            TextOutW(
+                draw.hDC,
+                draw.rcItem.left + 50,
+                draw.rcItem.top + 12,
+                label.as_ptr(),
+                label.len().saturating_sub(1) as i32,
+            );
         }
     }
 }
@@ -546,6 +642,10 @@ impl Drop for DesktopWindow {
                 if !object.is_null() {
                     DeleteObject(object);
                 }
+            }
+
+            if !self.app_icon.is_null() {
+                DestroyIcon(self.app_icon);
             }
         }
     }
@@ -625,20 +725,28 @@ unsafe extern "system" fn window_proc(
             }
             return 0;
         }
-        WM_COMMAND => {
-            let command = low_word(wparam) as usize;
+        WM_MEASUREITEM => {
+            if lparam != 0 {
+                let measure = unsafe { &mut *(lparam as *mut MEASUREITEMSTRUCT) };
 
-            match command {
-                MENU_OPEN => unsafe {
-                    ShowWindow(hwnd, SW_RESTORE);
-                    SetForegroundWindow(hwnd);
-                },
-                MENU_EXIT => unsafe {
-                    DestroyWindow(hwnd);
-                },
-                _ => {}
+                if matches!(measure.itemID as usize, MENU_OPEN | MENU_EXIT) {
+                    measure.itemWidth = TRAY_MENU_WIDTH;
+                    measure.itemHeight = TRAY_MENU_ITEM_HEIGHT;
+                    return 1;
+                }
             }
-            return 0;
+        }
+        WM_DRAWITEM => {
+            if !state.is_null() && lparam != 0 {
+                let draw = unsafe { &*(lparam as *const DRAWITEMSTRUCT) };
+
+                if matches!(draw.itemID as usize, MENU_OPEN | MENU_EXIT) {
+                    unsafe {
+                        (*state).draw_tray_menu_item(draw);
+                    }
+                    return 1;
+                }
+            }
         }
         WM_ACTIVATION_RESULT => {
             if !state.is_null() {
@@ -820,22 +928,6 @@ unsafe fn move_control(hwnd: HWND, rect: view::UiRect) {
     unsafe {
         MoveWindow(hwnd, rect.left, rect.top, rect.width(), rect.height(), 1);
     }
-}
-
-unsafe fn edit_selection(hwnd: HWND) -> (usize, isize) {
-    let mut start = 0_u32;
-    let mut end = 0_u32;
-
-    unsafe {
-        SendMessageW(
-            hwnd,
-            EM_GETSEL_MESSAGE,
-            (&mut start as *mut u32) as usize,
-            (&mut end as *mut u32) as isize,
-        );
-    }
-
-    (start as usize, end as isize)
 }
 
 unsafe fn select_log_end(hwnd: HWND) {
