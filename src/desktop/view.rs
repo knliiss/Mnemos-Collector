@@ -259,13 +259,7 @@ unsafe fn draw_header(hdc: *mut c_void, layout: Layout, fonts: Fonts) {
             theme::TEXT,
         );
 
-        draw_window_button(
-            hdc,
-            layout.window_minimize,
-            "—",
-            false,
-            fonts.ui,
-        );
+        draw_window_button(hdc, layout.window_minimize, "—", false, fonts.ui);
         draw_window_button(hdc, layout.window_close, "×", true, fonts.ui);
     }
 }
