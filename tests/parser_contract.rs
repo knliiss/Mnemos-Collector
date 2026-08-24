@@ -184,6 +184,28 @@ fn collects_only_raid_location_numbers() {
 }
 
 #[test]
+fn parses_real_single_line_raid_announcement() {
+    let mut parser = LogParser::default();
+    let opening = chat(
+        "i [Рейд] » Открылись врата на рейды \"Шиноби\" (локация #3), \"Каньон\" (локация #15), \"Тайпинская башня\" (локация #21), \"Космодрайвер\" (локация #25)",
+    );
+
+    assert_eq!(
+        parser.consume_line(&opening),
+        vec![CollectorEvent::Raid {
+            locations: vec![3, 15, 21, 25],
+        }],
+    );
+    assert_eq!(parser.mode(), GameMode::MasterSword);
+
+    let closing = chat(
+        "i [Рейд] » Закрылись врата на рейды \"Шиноби\" (локация #3), \"Каньон\" (локация #15), \"Тайпинская башня\" (локация #21), \"Космодрайвер\" (локация #25)",
+    );
+
+    assert!(parser.consume_line(&closing).is_empty());
+}
+
+#[test]
 fn blocks_events_in_other_modes_and_accepts_them_after_master_sword_join() {
     let mut parser = LogParser::default();
     let drop = chat("[Магистр] PlayerOne [#20] выбил \"Мифическое\" оружие Лесной меч");
