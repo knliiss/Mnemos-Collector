@@ -9,28 +9,24 @@ use windows_sys::Win32::Graphics::Dwm::{
     DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
-    InvalidateRect, PAINTSTRUCT, RoundRect, SelectObject, SetBkColor, SetBkMode, SetTextColor,
-    TRANSPARENT, TextOutW, UpdateWindow,
+    BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, InvalidateRect, PAINTSTRUCT,
+    SetBkColor, SetTextColor, UpdateWindow,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows_sys::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CREATESTRUCTW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, ES_AUTOVSCROLL,
-    ES_MULTILINE, ES_PASSWORD, ES_READONLY, GWLP_USERDATA, GetClientRect, GetCursorPos,
-    GetMessageW, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW, LoadCursorW,
-    MENUINFO, MF_OWNERDRAW, MIM_BACKGROUND, MSG, MessageBoxW, MoveWindow, PostMessageW,
-    PostQuitMessage, RegisterClassW, SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW, SendMessageW,
-    SetForegroundWindow, SetMenuInfo, SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
-    TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
-    TranslateMessage, WM_APP, WM_CLOSE, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY,
-    WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONUP, WM_MEASUREITEM, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP,
-    WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
-    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    CREATESTRUCTW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow,
+    DispatchMessageW, ES_AUTOHSCROLL, ES_PASSWORD, GWLP_USERDATA, GetClientRect, GetMessageW,
+    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW, LoadCursorW, MSG,
+    MessageBoxW, MINMAXINFO, MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SIZE_MINIMIZED,
+    SW_HIDE, SW_RESTORE, SW_SHOW, ScreenToClient, SendMessageW, SetForegroundWindow, SetTimer,
+    SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage, WM_APP, WM_CLOSE,
+    WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_LBUTTONUP, WM_MOUSEWHEEL, WM_NCCREATE,
+    WM_PAINT, WM_RBUTTONUP, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD,
+    WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
 };
 use zeroize::Zeroizing;
 
@@ -43,15 +39,13 @@ use crate::security::CredentialStore;
 use super::DesktopLaunchContext;
 use super::mascot;
 use super::theme;
+use super::tray_popup;
 use super::view::{self, Fonts, Layout, ViewState};
 
 const CLASS_NAME: &str = "MnemosCollectorShell";
 const WINDOW_TITLE: &str = "Mnemos Collector";
 const TIMER_REFRESH: usize = 1;
 const REFRESH_INTERVAL_MS: u32 = 750;
-const EM_SETSEL_MESSAGE: u32 = 0x00B1;
-const EM_SCROLLCARET_MESSAGE: u32 = 0x00B7;
-const EM_REPLACESEL_MESSAGE: u32 = 0x00C2;
 const WM_SETICON_MESSAGE: u32 = 0x0080;
 const ICON_SMALL_VALUE: usize = 0;
 const ICON_BIG_VALUE: usize = 1;
@@ -59,36 +53,8 @@ const WM_TRAY: u32 = WM_APP + 1;
 const WM_ACTIVATION_RESULT: u32 = WM_APP + 2;
 const WM_COLLECTOR_STOPPED: u32 = WM_APP + 3;
 const TRAY_ID: u32 = 1;
-const MENU_OPEN: usize = 4101;
-const MENU_EXIT: usize = 4102;
-const TRAY_MENU_WIDTH: u32 = 184;
-const TRAY_MENU_ITEM_HEIGHT: u32 = 38;
-const OWNER_DRAW_SELECTED: u32 = 0x0001;
 const DWM_WINDOW_CORNER_PREFERENCE_ATTRIBUTE: u32 = 33;
 const DWM_WINDOW_CORNER_PREFERENCE_ROUND: u32 = 2;
-
-#[repr(C)]
-struct MeasureItemStruct {
-    _control_type: u32,
-    _control_id: u32,
-    item_id: u32,
-    item_width: u32,
-    item_height: u32,
-    _item_data: usize,
-}
-
-#[repr(C)]
-struct DrawItemStruct {
-    _control_type: u32,
-    _control_id: u32,
-    item_id: u32,
-    _item_action: u32,
-    item_state: u32,
-    _item_window: HWND,
-    device_context: *mut c_void,
-    item_rect: RECT,
-    _item_data: usize,
-}
 
 pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
     unsafe {
@@ -135,8 +101,8 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            920,
-            700,
+            860,
+            640,
             null_mut(),
             null_mut(),
             instance,
@@ -156,6 +122,7 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
             app_icon as isize,
         );
         SendMessageW(hwnd, WM_SETICON_MESSAGE, ICON_BIG_VALUE, app_icon as isize);
+
         (*state_ptr).initialize_controls(hwnd, instance)?;
         (*state_ptr).install_tray_icon(hwnd)?;
         (*state_ptr).start_collector_if_ready(hwnd);
@@ -196,7 +163,6 @@ struct DesktopWindow {
     activation_error: Option<String>,
     token_edit: HWND,
     device_edit: HWND,
-    logs_edit: HWND,
     ui_font: *mut c_void,
     title_font: *mut c_void,
     section_font: *mut c_void,
@@ -204,6 +170,7 @@ struct DesktopWindow {
     edit_brush: *mut c_void,
     app_icon: *mut c_void,
     last_log_text: String,
+    log_scroll_from_bottom: usize,
     last_runtime: RuntimeSnapshot,
 }
 
@@ -219,7 +186,6 @@ impl DesktopWindow {
             activation_error: None,
             token_edit: null_mut(),
             device_edit: null_mut(),
-            logs_edit: null_mut(),
             ui_font: null_mut(),
             title_font: null_mut(),
             section_font: null_mut(),
@@ -227,29 +193,30 @@ impl DesktopWindow {
             edit_brush: null_mut(),
             app_icon,
             last_log_text: String::new(),
+            log_scroll_from_bottom: 0,
             last_runtime: diagnostics::runtime_snapshot(),
         }
     }
 
     unsafe fn initialize_controls(&mut self, hwnd: HWND, instance: *mut c_void) -> Result<()> {
         let ui = wide("Segoe UI Variable Text");
+        let display = wide("Segoe UI Variable Display");
         let mono = wide("Cascadia Mono");
 
         self.ui_font =
-            unsafe { CreateFontW(-17, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, ui.as_ptr()) };
+            unsafe { CreateFontW(-16, 0, 0, 0, 500, 0, 0, 0, 1, 0, 0, 5, 0, ui.as_ptr()) };
         self.title_font =
-            unsafe { CreateFontW(-31, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, ui.as_ptr()) };
+            unsafe { CreateFontW(-29, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, display.as_ptr()) };
         self.section_font =
-            unsafe { CreateFontW(-22, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, ui.as_ptr()) };
+            unsafe { CreateFontW(-21, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, display.as_ptr()) };
         self.mono_font =
-            unsafe { CreateFontW(-15, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, mono.as_ptr()) };
+            unsafe { CreateFontW(-14, 0, 0, 0, 500, 0, 0, 0, 1, 0, 0, 5, 0, mono.as_ptr()) };
         self.edit_brush = unsafe { CreateSolidBrush(theme::SURFACE_RAISED) };
 
         self.token_edit = unsafe { create_text_edit(hwnd, instance, self.ui_font, true) };
         self.device_edit = unsafe { create_text_edit(hwnd, instance, self.ui_font, false) };
-        self.logs_edit = unsafe { create_log_edit(hwnd, instance, self.mono_font) };
 
-        if self.token_edit.is_null() || self.device_edit.is_null() || self.logs_edit.is_null() {
+        if self.token_edit.is_null() || self.device_edit.is_null() {
             return Err(io::Error::last_os_error())
                 .context("failed to create collector UI controls");
         }
@@ -262,7 +229,7 @@ impl DesktopWindow {
 
         self.update_control_visibility();
         self.layout_controls(hwnd);
-        self.refresh_logs();
+        self.refresh_logs(hwnd);
 
         if !self.provisioned {
             unsafe {
@@ -427,12 +394,11 @@ impl DesktopWindow {
         unsafe {
             move_control(self.token_edit, layout.token_edit);
             move_control(self.device_edit, layout.device_edit);
-            move_control(self.logs_edit, layout.logs_edit);
         }
     }
 
     fn refresh(&mut self, hwnd: HWND) {
-        self.refresh_logs();
+        self.refresh_logs(hwnd);
 
         let runtime = diagnostics::runtime_snapshot();
 
@@ -442,45 +408,41 @@ impl DesktopWindow {
         }
     }
 
-    fn refresh_logs(&mut self) {
+    fn refresh_logs(&mut self, hwnd: HWND) {
         let text = diagnostics::recent_text();
 
         if text == self.last_log_text {
             return;
         }
 
-        if unsafe { GetFocus() == self.logs_edit } {
+        self.last_log_text = text;
+
+        let layout = window_layout(hwnd, self.provisioned);
+        let limit = view::log_scroll_limit(&self.last_log_text, layout.logs_view);
+        self.log_scroll_from_bottom = self.log_scroll_from_bottom.min(limit);
+
+        self.invalidate(hwnd);
+    }
+
+    fn scroll_logs(&mut self, hwnd: HWND, x: i32, y: i32, delta: i16) {
+        let layout = window_layout(hwnd, self.provisioned);
+
+        if !layout.logs_view.contains(x, y) {
             return;
         }
 
-        if let Some(appended) = text.strip_prefix(&self.last_log_text) {
-            if !appended.is_empty() {
-                let appended = wide(appended);
+        let lines = ((delta.unsigned_abs() as usize) / 120).max(1) * 3;
+        let limit = view::log_scroll_limit(&self.last_log_text, layout.logs_view);
 
-                unsafe {
-                    select_log_end(self.logs_edit);
-                    SendMessageW(
-                        self.logs_edit,
-                        EM_REPLACESEL_MESSAGE,
-                        0,
-                        appended.as_ptr() as isize,
-                    );
-                }
-            }
-        } else {
-            let wide_text = wide(&text);
-
-            unsafe {
-                SetWindowTextW(self.logs_edit, wide_text.as_ptr());
-            }
+        if delta > 0 {
+            self.log_scroll_from_bottom =
+                (self.log_scroll_from_bottom + lines).min(limit);
+        } else if delta < 0 {
+            self.log_scroll_from_bottom =
+                self.log_scroll_from_bottom.saturating_sub(lines);
         }
 
-        self.last_log_text = text;
-
-        unsafe {
-            select_log_end(self.logs_edit);
-            SendMessageW(self.logs_edit, EM_SCROLLCARET_MESSAGE, 0, 0);
-        }
+        self.invalidate(hwnd);
     }
 
     unsafe fn paint(&self, hwnd: HWND) {
@@ -503,12 +465,15 @@ impl DesktopWindow {
             ui: self.ui_font,
             title: self.title_font,
             section: self.section_font,
+            mono: self.mono_font,
         };
         let state = ViewState {
             current_installation: self.current_installation,
             provisioning: self.provisioning,
             activation_error: self.activation_error.as_deref(),
             debug_enabled: diagnostics::debug_enabled(),
+            log_text: &self.last_log_text,
+            log_scroll_from_bottom: self.log_scroll_from_bottom,
         };
 
         unsafe {
@@ -537,139 +502,9 @@ impl DesktopWindow {
         }
     }
 
-    fn show_tray_menu(&self, hwnd: HWND) {
-        unsafe {
-            let menu = CreatePopupMenu();
-
-            if menu.is_null() {
-                return;
-            }
-
-            let menu_brush = CreateSolidBrush(theme::SURFACE);
-            let menu_info = MENUINFO {
-                cbSize: std::mem::size_of::<MENUINFO>() as u32,
-                fMask: MIM_BACKGROUND,
-                hbrBack: menu_brush,
-                ..std::mem::zeroed()
-            };
-
-            SetMenuInfo(menu, &menu_info);
-            AppendMenuW(menu, MF_OWNERDRAW, MENU_OPEN, null());
-            AppendMenuW(menu, MF_OWNERDRAW, MENU_EXIT, null());
-
-            let mut cursor = POINT { x: 0, y: 0 };
-            GetCursorPos(&mut cursor);
-            SetForegroundWindow(hwnd);
-
-            let command = TrackPopupMenu(
-                menu,
-                TPM_BOTTOMALIGN | TPM_LEFTALIGN | TPM_RIGHTBUTTON | TPM_RETURNCMD,
-                cursor.x,
-                cursor.y,
-                0,
-                hwnd,
-                null(),
-            );
-
-            DestroyMenu(menu);
-            DeleteObject(menu_brush);
-
-            match command as usize {
-                MENU_OPEN => {
-                    ShowWindow(hwnd, SW_RESTORE);
-                    SetForegroundWindow(hwnd);
-                }
-                MENU_EXIT => {
-                    DestroyWindow(hwnd);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    unsafe fn draw_tray_menu_item(&self, draw: &DrawItemStruct) {
-        let surface_brush = unsafe { CreateSolidBrush(theme::SURFACE) };
-
-        unsafe {
-            FillRect(draw.device_context, &draw.item_rect, surface_brush);
-            DeleteObject(surface_brush);
-        }
-
-        if draw.item_state & OWNER_DRAW_SELECTED != 0 {
-            let highlight = RECT {
-                left: draw.item_rect.left + 4,
-                top: draw.item_rect.top + 3,
-                right: draw.item_rect.right - 4,
-                bottom: draw.item_rect.bottom - 3,
-            };
-            let brush = unsafe { CreateSolidBrush(theme::SURFACE_RAISED) };
-            let pen = unsafe { CreatePen(0, 1, theme::LINE_STRONG) };
-            let previous_brush = unsafe { SelectObject(draw.device_context, brush) };
-            let previous_pen = unsafe { SelectObject(draw.device_context, pen) };
-
-            unsafe {
-                RoundRect(
-                    draw.device_context,
-                    highlight.left,
-                    highlight.top,
-                    highlight.right,
-                    highlight.bottom,
-                    22,
-                    22,
-                );
-                SelectObject(draw.device_context, previous_pen);
-                SelectObject(draw.device_context, previous_brush);
-                DeleteObject(pen);
-                DeleteObject(brush);
-            }
-        }
-
-        unsafe {
-            SetBkMode(draw.device_context, TRANSPARENT as i32);
-            SelectObject(draw.device_context, self.ui_font);
-        }
-
-        let (label, color) = match draw.item_id as usize {
-            MENU_OPEN => ("Открыть", theme::TEXT),
-            MENU_EXIT => ("Выйти", theme::DANGER),
-            _ => return,
-        };
-
-        if draw.item_id as usize == MENU_OPEN {
-            unsafe {
-                mascot::draw(
-                    draw.device_context,
-                    draw.item_rect.left + 10,
-                    draw.item_rect.top + 7,
-                    24,
-                );
-            }
-        } else {
-            let close = wide("×");
-
-            unsafe {
-                SetTextColor(draw.device_context, theme::DANGER);
-                TextOutW(
-                    draw.device_context,
-                    draw.item_rect.left + 18,
-                    draw.item_rect.top + 10,
-                    close.as_ptr(),
-                    1,
-                );
-            }
-        }
-
-        let label = wide(label);
-
-        unsafe {
-            SetTextColor(draw.device_context, color);
-            TextOutW(
-                draw.device_context,
-                draw.item_rect.left + 44,
-                draw.item_rect.top + 9,
-                label.as_ptr(),
-                label.len().saturating_sub(1) as i32,
-            );
+    fn show_tray_popup(&self, hwnd: HWND) {
+        if let Err(error) = tray_popup::show(hwnd, self.ui_font) {
+            diagnostics::error("desktop", format!("Tray popup failed: {error:#}"));
         }
     }
 }
@@ -723,6 +558,14 @@ unsafe extern "system" fn window_proc(
             }
         }
         WM_ERASEBKGND => return 1,
+        WM_GETMINMAXINFO => {
+            if lparam != 0 {
+                let limits = unsafe { &mut *(lparam as *mut MINMAXINFO) };
+                limits.ptMinTrackSize.x = 760;
+                limits.ptMinTrackSize.y = 560;
+            }
+            return 0;
+        }
         WM_SIZE => {
             if wparam as u32 == SIZE_MINIMIZED {
                 unsafe {
@@ -757,6 +600,21 @@ unsafe extern "system" fn window_proc(
             }
             return 0;
         }
+        WM_MOUSEWHEEL => {
+            if !state.is_null() {
+                let mut point = POINT {
+                    x: low_word(lparam as usize) as i16 as i32,
+                    y: high_word(lparam as usize) as i16 as i32,
+                };
+                let delta = high_word(wparam) as i16;
+
+                unsafe {
+                    ScreenToClient(hwnd, &mut point);
+                    (*state).scroll_logs(hwnd, point.x, point.y, delta);
+                }
+            }
+            return 0;
+        }
         WM_TRAY => {
             match lparam as u32 {
                 WM_LBUTTONUP => unsafe {
@@ -764,34 +622,11 @@ unsafe extern "system" fn window_proc(
                     SetForegroundWindow(hwnd);
                 },
                 WM_RBUTTONUP if !state.is_null() => unsafe {
-                    (*state).show_tray_menu(hwnd);
+                    (*state).show_tray_popup(hwnd);
                 },
                 _ => {}
             }
             return 0;
-        }
-        WM_MEASUREITEM => {
-            if lparam != 0 {
-                let measure = unsafe { &mut *(lparam as *mut MeasureItemStruct) };
-
-                if matches!(measure.item_id as usize, MENU_OPEN | MENU_EXIT) {
-                    measure.item_width = TRAY_MENU_WIDTH;
-                    measure.item_height = TRAY_MENU_ITEM_HEIGHT;
-                    return 1;
-                }
-            }
-        }
-        WM_DRAWITEM => {
-            if !state.is_null() && lparam != 0 {
-                let draw = unsafe { &*(lparam as *const DrawItemStruct) };
-
-                if matches!(draw.item_id as usize, MENU_OPEN | MENU_EXIT) {
-                    unsafe {
-                        (*state).draw_tray_menu_item(draw);
-                    }
-                    return 1;
-                }
-            }
         }
         WM_ACTIVATION_RESULT => {
             if !state.is_null() {
@@ -805,7 +640,7 @@ unsafe extern "system" fn window_proc(
             DestroyWindow(hwnd);
             return 0;
         },
-        WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC => {
+        WM_CTLCOLOREDIT => {
             if !state.is_null() {
                 unsafe {
                     let hdc = wparam as *mut c_void;
@@ -917,42 +752,7 @@ unsafe fn create_text_edit(
             0,
             0,
             100,
-            38,
-            hwnd,
-            null_mut(),
-            instance,
-            null(),
-        )
-    };
-
-    if !edit.is_null() {
-        unsafe {
-            SendMessageW(edit, WM_SETFONT, font as usize, 1);
-        }
-    }
-
-    edit
-}
-
-unsafe fn create_log_edit(hwnd: HWND, instance: *mut c_void, font: *mut c_void) -> HWND {
-    let class = wide("EDIT");
-    let empty = wide("");
-    let style = WS_CHILD
-        | WS_VISIBLE
-        | WS_VSCROLL
-        | ES_MULTILINE as u32
-        | ES_AUTOVSCROLL as u32
-        | ES_READONLY as u32;
-    let edit = unsafe {
-        CreateWindowExW(
-            0,
-            class.as_ptr(),
-            empty.as_ptr(),
-            style,
-            0,
-            0,
-            100,
-            100,
+            34,
             hwnd,
             null_mut(),
             instance,
@@ -972,14 +772,6 @@ unsafe fn create_log_edit(hwnd: HWND, instance: *mut c_void, font: *mut c_void) 
 unsafe fn move_control(hwnd: HWND, rect: view::UiRect) {
     unsafe {
         MoveWindow(hwnd, rect.left, rect.top, rect.width(), rect.height(), 1);
-    }
-}
-
-unsafe fn select_log_end(hwnd: HWND) {
-    let length = unsafe { GetWindowTextLengthW(hwnd) }.max(0) as usize;
-
-    unsafe {
-        SendMessageW(hwnd, EM_SETSEL_MESSAGE, length, length as isize);
     }
 }
 

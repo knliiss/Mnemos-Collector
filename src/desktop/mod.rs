@@ -1,6 +1,7 @@
 mod mascot;
 mod native_shell;
 mod theme;
+mod tray_popup;
 mod view;
 
 use anyhow::Result;
