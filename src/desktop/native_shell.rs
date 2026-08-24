@@ -21,16 +21,16 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CREATESTRUCTW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
     DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, ES_AUTOHSCROLL, ES_AUTOVSCROLL,
-    ES_MULTILINE, ES_PASSWORD, ES_READONLY, GWLP_USERDATA, GetClientRect, GetCursorPos, GetMessageW,
-    GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW, LoadCursorW, MENUINFO,
-    MF_OWNERDRAW, MIM_BACKGROUND, MSG, MessageBoxW, MoveWindow, PostMessageW, PostQuitMessage,
-    RegisterClassW, SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW, SendMessageW,
+    ES_MULTILINE, ES_PASSWORD, ES_READONLY, GWLP_USERDATA, GetClientRect, GetCursorPos,
+    GetMessageW, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IDC_ARROW, LoadCursorW,
+    MENUINFO, MF_OWNERDRAW, MIM_BACKGROUND, MSG, MessageBoxW, MoveWindow, PostMessageW,
+    PostQuitMessage, RegisterClassW, SIZE_MINIMIZED, SW_HIDE, SW_RESTORE, SW_SHOW, SendMessageW,
     SetForegroundWindow, SetMenuInfo, SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow,
     TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
     TranslateMessage, WM_APP, WM_CLOSE, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY,
-    WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONUP, WM_MEASUREITEM, WM_NCCREATE, WM_PAINT,
-    WM_RBUTTONUP, WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN,
-    WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONUP, WM_MEASUREITEM, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP,
+    WM_SETFONT, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
+    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 use zeroize::Zeroizing;
 
