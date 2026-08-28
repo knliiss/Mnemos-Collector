@@ -1,4 +1,7 @@
 #[cfg(target_os = "windows")]
+#[path = "view.rs"]
+mod base_view;
+#[cfg(target_os = "windows")]
 mod clipboard;
 #[cfg(target_os = "windows")]
 mod dpi;
@@ -17,6 +20,7 @@ mod theme;
 #[cfg(target_os = "windows")]
 mod tray_popup;
 #[cfg(target_os = "windows")]
+#[path = "versioned_view.rs"]
 mod view;
 #[cfg(target_os = "windows")]
 mod window_placement;
