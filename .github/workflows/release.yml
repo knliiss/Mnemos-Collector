@@ -267,11 +267,89 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  macos:
+    needs: prepare
+    name: macos-${{ matrix.architecture }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: aarch64
+            target: aarch64-apple-darwin
+            runner: macos-15
+          - architecture: x86_64
+            target: x86_64-apple-darwin
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    env:
+      MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+
+      - name: Install macOS packaging dependencies
+        shell: bash
+        run: brew install librsvg
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup target add ${{ matrix.target }} --toolchain 1.98.0
+
+      - name: Build macOS Collector
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.98.0 build \
+            --locked \
+            --release \
+            --target ${{ matrix.target }}
+
+      - name: Package macOS application
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/package-macos.sh
+          bash scripts/package-macos.sh \
+            target/${{ matrix.target }}/release/mnemos-collector \
+            "$VERSION" \
+            ${{ matrix.architecture }} \
+            dist
+
+      - name: Verify macOS artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg="dist/Mnemos-Collector-macOS-${{ matrix.architecture }}.dmg"
+          update="dist/mnemos-collector-update-macos-${{ matrix.architecture }}"
+
+          test -s "$dmg"
+          test -x "$update"
+          codesign --verify --strict "$update"
+          file "$update" | grep -Fq '${{ matrix.architecture }}'
+
+      - name: Upload macOS release artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: collector-release-macos-${{ matrix.architecture }}
+          path: |
+            dist/Mnemos-Collector-macOS-${{ matrix.architecture }}.dmg
+            dist/mnemos-collector-update-macos-${{ matrix.architecture }}
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     needs:
       - prepare
       - windows
       - linux
+      - macos
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -377,11 +455,17 @@ jobs:
           sign_artifact \
             windows-x86_64 \
             Mnemos-Collector-Windows-x86_64.exe
+          sign_artifact \
+            macos-aarch64 \
+            mnemos-collector-update-macos-aarch64
+          sign_artifact \
+            macos-x86_64 \
+            mnemos-collector-update-macos-x86_64
 
           printf '%s\n' "$manifest" > dist/manifest.json
           jq -e \
             --arg version "$VERSION" \
-            '.version == $version and (.artifacts | length) == 2' \
+            '.version == $version and (.artifacts | length) == 4' \
             dist/manifest.json \
             > /dev/null
 
@@ -396,6 +480,10 @@ jobs:
               Mnemos-Collector-Linux-x86_64.AppImage \
               Mnemos-Collector-Linux-amd64.deb \
               mnemos-collector-update-linux-x86_64 \
+              Mnemos-Collector-macOS-aarch64.dmg \
+              mnemos-collector-update-macos-aarch64 \
+              Mnemos-Collector-macOS-x86_64.dmg \
+              mnemos-collector-update-macos-x86_64 \
               manifest.json \
               > SHA256SUMS.txt
           )
@@ -410,6 +498,10 @@ jobs:
             dist/Mnemos-Collector-Linux-x86_64.AppImage
             dist/Mnemos-Collector-Linux-amd64.deb
             dist/mnemos-collector-update-linux-x86_64
+            dist/Mnemos-Collector-macOS-aarch64.dmg
+            dist/mnemos-collector-update-macos-aarch64
+            dist/Mnemos-Collector-macOS-x86_64.dmg
+            dist/mnemos-collector-update-macos-x86_64
             dist/manifest.json
             dist/SHA256SUMS.txt
           )
