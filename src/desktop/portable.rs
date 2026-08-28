@@ -761,11 +761,7 @@ fn status_copy(
         );
     }
 
-    (
-        "Cristalix активен",
-        "Ожидаем переход в Master Sword.",
-        TEXT,
-    )
+    ("Cristalix активен", "Ожидаем переход в Master Sword.", TEXT)
 }
 
 fn game_mode_label(mode: &str) -> &str {
