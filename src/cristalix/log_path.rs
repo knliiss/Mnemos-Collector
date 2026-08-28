@@ -1,11 +1,13 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use directories::{ProjectDirs, UserDirs};
 
 const CONFIGURED_LOG_PATH_FILE: &str = "cristalix-log-path";
-const CRISTALIX_LOG_SUFFIX: [&str; 4] = ["updates", "Minigames", "logs", "latest.log"];
+const CRISTALIX_LOG_DIRECTORY_SUFFIX: [&str; 3] = ["updates", "Minigames", "logs"];
+const PREFERRED_LOG_FILE: &str = "latest.log";
 
 pub fn default_latest_log_path() -> Option<PathBuf> {
     known_latest_log_paths().into_iter().next()
@@ -68,8 +70,11 @@ pub fn discover_latest_log(
         return Some(path);
     }
 
-    if let Some(path) = process_candidates.iter().find(|path| path.is_file()) {
-        return Some(path.clone());
+    if let Some(path) = process_candidates
+        .iter()
+        .find_map(|candidate| resolve_cristalix_log_candidate(candidate))
+    {
+        return Some(path);
     }
 
     if let Some(path) = cached_path.filter(|path| path.is_file()) {
@@ -77,8 +82,8 @@ pub fn discover_latest_log(
     }
 
     known_latest_log_paths()
-        .into_iter()
-        .find(|path| path.is_file())
+        .iter()
+        .find_map(|candidate| resolve_cristalix_log_candidate(candidate))
 }
 
 pub fn known_latest_log_paths() -> Vec<PathBuf> {
@@ -92,29 +97,90 @@ pub fn known_latest_log_paths() -> Vec<PathBuf> {
 #[cfg(target_os = "macos")]
 fn known_latest_log_paths_for_home(home: &Path) -> Vec<PathBuf> {
     vec![
-        latest_log_in_cristalix_root(
+        preferred_log_in_cristalix_root(
             home.join("Library")
                 .join("Application Support")
                 .join("cristalix"),
         ),
-        latest_log_in_cristalix_root(
+        preferred_log_in_cristalix_root(
             home.join("Library")
                 .join("Application Support")
                 .join(".cristalix"),
         ),
-        latest_log_in_cristalix_root(home.join(".cristalix")),
+        preferred_log_in_cristalix_root(home.join(".cristalix")),
     ]
 }
 
 #[cfg(not(target_os = "macos"))]
 fn known_latest_log_paths_for_home(home: &Path) -> Vec<PathBuf> {
-    vec![latest_log_in_cristalix_root(home.join(".cristalix"))]
+    vec![preferred_log_in_cristalix_root(home.join(".cristalix"))]
 }
 
-fn latest_log_in_cristalix_root(root: PathBuf) -> PathBuf {
-    CRISTALIX_LOG_SUFFIX
+fn preferred_log_in_cristalix_root(root: PathBuf) -> PathBuf {
+    cristalix_log_directory(root).join(PREFERRED_LOG_FILE)
+}
+
+fn cristalix_log_directory(root: PathBuf) -> PathBuf {
+    CRISTALIX_LOG_DIRECTORY_SUFFIX
         .iter()
         .fold(root, |path, component| path.join(component))
+}
+
+fn resolve_cristalix_log_candidate(candidate: &Path) -> Option<PathBuf> {
+    if candidate.is_file() {
+        return Some(candidate.to_path_buf());
+    }
+
+    let directory = if candidate.is_dir() {
+        candidate
+    } else if candidate.file_name().is_some_and(|name| name == PREFERRED_LOG_FILE) {
+        candidate.parent()?
+    } else {
+        return None;
+    };
+
+    newest_log_in_directory(directory)
+}
+
+fn newest_log_in_directory(directory: &Path) -> Option<PathBuf> {
+    let preferred = directory.join(PREFERRED_LOG_FILE);
+
+    if preferred.is_file() {
+        return Some(preferred);
+    }
+
+    let entries = fs::read_dir(directory).ok()?;
+    let mut newest: Option<(SystemTime, PathBuf)> = None;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        if !path.is_file()
+            || !path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("log"))
+        {
+            continue;
+        }
+
+        let modified = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+
+        let should_replace = newest
+            .as_ref()
+            .is_none_or(|(current_modified, current_path)| {
+                modified > *current_modified
+                    || (modified == *current_modified && path > *current_path)
+            });
+
+        if should_replace {
+            newest = Some((modified, path));
+        }
+    }
+
+    newest.map(|(_, path)| path)
 }
 
 fn configured_log_path_file() -> Option<PathBuf> {
@@ -156,10 +222,45 @@ mod tests {
     }
 
     #[test]
+    fn preferred_latest_log_wins_inside_cristalix_logs_directory() {
+        let directory = temporary_cristalix_logs_directory();
+        let preferred = directory.join("latest.log");
+        let session = directory.join("2026-08-29.log");
+
+        fs::write(&session, b"session").unwrap();
+        fs::write(&preferred, b"latest").unwrap();
+
+        assert_eq!(newest_log_in_directory(&directory), Some(preferred));
+
+        let _ = fs::remove_dir_all(directory.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn falls_back_to_log_file_inside_exact_cristalix_logs_directory() {
+        let directory = temporary_cristalix_logs_directory();
+        let session = directory.join("current-session.log");
+        let unrelated = directory.join("notes.txt");
+
+        fs::write(&session, b"session").unwrap();
+        fs::write(&unrelated, b"notes").unwrap();
+
+        let candidate = directory.join("latest.log");
+
+        assert_eq!(resolve_cristalix_log_candidate(&candidate), Some(session));
+
+        let _ = fs::remove_dir_all(directory.parent().unwrap().parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
     fn running_process_candidate_has_priority_over_cached_path() {
         let directory = std::env::temp_dir().join(format!("mnemos-discovery-{}", Uuid::now_v7()));
         let cached = directory.join("cached").join("latest.log");
-        let process = directory.join("process").join("latest.log");
+        let process = directory
+            .join("cristalix")
+            .join("updates")
+            .join("Minigames")
+            .join("logs")
+            .join("latest.log");
 
         fs::create_dir_all(cached.parent().unwrap()).unwrap();
         fs::create_dir_all(process.parent().unwrap()).unwrap();
@@ -187,5 +288,15 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(directory);
+    }
+
+    fn temporary_cristalix_logs_directory() -> PathBuf {
+        let root = std::env::temp_dir()
+            .join(format!("mnemos-log-dir-{}", Uuid::now_v7()))
+            .join("cristalix");
+        let directory = cristalix_log_directory(root);
+
+        fs::create_dir_all(&directory).unwrap();
+        directory
     }
 }
