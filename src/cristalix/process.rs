@@ -157,15 +157,29 @@ fn references_cristalix_game(value: &str) -> bool {
     let normalized = path.replace('\\', "/").to_ascii_lowercase();
 
     cristalix_root_end(&normalized).is_some()
-        && normalized.contains("/updates/minigames")
+        && normalized.contains("minigames")
         && !normalized.contains("mnemos-collector")
 }
 
 fn collect_log_candidates(locations: &[String], candidates: &mut BTreeSet<PathBuf>) {
     for location in locations {
+        if let Some(path) = explicit_log_from_location(location) {
+            candidates.insert(path);
+        }
+
         if let Some(path) = latest_log_from_location(location) {
             candidates.insert(path);
         }
+    }
+}
+
+fn explicit_log_from_location(location: &str) -> Option<PathBuf> {
+    let value = extract_path_value(location)?;
+
+    if value.to_ascii_lowercase().ends_with(".log") {
+        Some(PathBuf::from(value))
+    } else {
+        None
     }
 }
 
@@ -250,6 +264,19 @@ mod tests {
             PathBuf::from(
                 "/Users/player/Library/Application Support/cristalix/updates/Minigames/logs/latest.log"
             )
+        );
+    }
+
+    #[test]
+    fn accepts_explicit_log_path_outside_the_cristalix_directory() {
+        let path = explicit_log_from_location(
+            "-Dcristalix.log=/Volumes/Games/Custom Logs/current-session.log",
+        )
+        .unwrap();
+
+        assert_eq!(
+            path,
+            PathBuf::from("/Volumes/Games/Custom Logs/current-session.log")
         );
     }
 
