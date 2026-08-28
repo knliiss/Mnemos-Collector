@@ -18,6 +18,7 @@ use crate::provisioning::{ProvisioningClient, default_device_name};
 use crate::security::CredentialStore;
 
 use super::DesktopLaunchContext;
+use super::macos_mascot;
 use super::macos_native::{self, MacStatusItem};
 
 const WINDOW_WIDTH: f32 = 1080.0;
@@ -36,6 +37,11 @@ const SECTION_GAP: f32 = 16.0;
 const LOG_HEADER_HEIGHT: f32 = 52.0;
 const LOG_LINE_HEIGHT: f32 = 18.0;
 const LOG_CHAR_WIDTH: f32 = 8.0;
+
+const UI_FONT_SIZE: f32 = 16.0;
+const TITLE_FONT_SIZE: f32 = 29.0;
+const SECTION_FONT_SIZE: f32 = 21.0;
+const MONO_FONT_SIZE: f32 = 14.0;
 
 const BACKGROUND: Color32 = Color32::from_rgb(0x02, 0x03, 0x02);
 const LOG_SURFACE: Color32 = Color32::from_rgb(0x0b, 0x0c, 0x09);
@@ -65,7 +71,7 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<bool> {
         .with_resizable(false)
         .with_maximize_button(false)
         .with_decorations(false)
-        .with_icon(collector_icon());
+        .with_icon(macos_mascot::icon(32));
     let options = eframe::NativeOptions {
         viewport,
         centered: true,
@@ -289,9 +295,21 @@ impl MacDesktop {
         let icon = rect(22.0, 12.0, 44.0, 44.0);
 
         draw_card(ui.painter(), icon, SURFACE, LINE, 18.0);
-        draw_mascot(ui.painter(), icon.shrink(2.0));
-        draw_text(ui.painter(), Pos2::new(78.0, 14.0), "MNEMOS", 13.0, ACCENT);
-        draw_text(ui.painter(), Pos2::new(78.0, 34.0), "Collector", 21.0, TEXT);
+        macos_mascot::draw(ui.painter(), icon.shrink(2.0));
+        draw_text(
+            ui.painter(),
+            Pos2::new(78.0, 14.0),
+            "MNEMOS",
+            UI_FONT_SIZE,
+            ACCENT,
+        );
+        draw_text(
+            ui.painter(),
+            Pos2::new(78.0, 34.0),
+            "Collector",
+            SECTION_FONT_SIZE,
+            TEXT,
+        );
 
         let minimize = ui.interact(
             layout.window_minimize,
@@ -344,8 +362,8 @@ impl MacDesktop {
         draw_card(ui.painter(), hero, SURFACE, LINE, CARD_RADIUS);
         ui.painter().rect_filled(
             Rect::from_min_max(
-                Pos2::new(hero.left(), hero.top() + 22.0),
-                Pos2::new(hero.left() + 4.0, hero.bottom() - 22.0),
+                Pos2::new(hero.left() + 1.0, hero.top() + 24.0),
+                Pos2::new(hero.left() + 4.0, hero.top() + 82.0),
             ),
             2.0,
             status_color,
@@ -354,21 +372,21 @@ impl MacDesktop {
             ui.painter(),
             Pos2::new(hero.left() + 20.0, hero.top() + 14.0),
             "СТАТУС",
-            13.0,
+            UI_FONT_SIZE,
             ACCENT,
         );
         draw_text(
             ui.painter(),
             Pos2::new(hero.left() + 20.0, hero.top() + 35.0),
             title,
-            29.0,
+            TITLE_FONT_SIZE,
             status_color,
         );
         draw_text(
             ui.painter(),
-            Pos2::new(hero.left() + 20.0, hero.top() + 72.0),
+            Pos2::new(hero.left() + 20.0, hero.top() + 70.0),
             detail,
-            14.0,
+            UI_FONT_SIZE,
             TEXT_SECONDARY,
         );
 
@@ -376,7 +394,7 @@ impl MacDesktop {
             Pos2::new(hero.right() - 68.0, hero.top() + 17.0),
             Vec2::splat(48.0),
         );
-        draw_mascot(ui.painter(), mascot);
+        macos_mascot::draw(ui.painter(), mascot);
         draw_status_tiles(ui.painter(), runtime, hero);
     }
 
@@ -390,21 +408,21 @@ impl MacDesktop {
             } else {
                 "Установить Collector"
             },
-            21.0,
+            SECTION_FONT_SIZE,
             TEXT,
         );
         draw_text(
             ui.painter(),
             Pos2::new(activation.left() + 18.0, activation.top() + 46.0),
             "Код активации",
-            13.0,
+            UI_FONT_SIZE,
             TEXT_MUTED,
         );
         draw_text(
             ui.painter(),
             Pos2::new(layout.device_field.left(), activation.top() + 46.0),
             "Устройство",
-            13.0,
+            UI_FONT_SIZE,
             TEXT_MUTED,
         );
         draw_input_background(ui.painter(), layout.token_field);
@@ -450,7 +468,7 @@ impl MacDesktop {
                 ui.painter(),
                 Pos2::new(activation.left() + 18.0, activation.bottom() - 23.0),
                 error,
-                13.0,
+                UI_FONT_SIZE,
                 DANGER,
             );
         }
@@ -470,7 +488,7 @@ impl MacDesktop {
                 layout.logs_card.top() + 13.0,
             ),
             "Журнал",
-            21.0,
+            SECTION_FONT_SIZE,
             TEXT,
         );
 
@@ -546,7 +564,7 @@ impl MacDesktop {
             Pos2::new(layout.logs_card.right(), layout.logs_card.bottom() + 3.0),
             Align2::RIGHT_TOP,
             format!("v{}", env!("CARGO_PKG_VERSION")),
-            FontId::new(12.0, FontFamily::Proportional),
+            FontId::new(UI_FONT_SIZE, FontFamily::Proportional),
             TEXT_MUTED,
         );
     }
@@ -693,6 +711,18 @@ fn configure_style(context: &egui::Context) {
         style.spacing.item_spacing = Vec2::ZERO;
         style.spacing.button_padding = Vec2::ZERO;
         style.spacing.interact_size.y = 24.0;
+        style.text_styles.insert(
+            egui::TextStyle::Body,
+            FontId::new(UI_FONT_SIZE, FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Button,
+            FontId::new(UI_FONT_SIZE, FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Monospace,
+            FontId::new(MONO_FONT_SIZE, FontFamily::Monospace),
+        );
     });
 }
 
@@ -722,20 +752,14 @@ fn draw_window_button(
     destructive: bool,
     hovered: bool,
 ) {
-    let fill = if hovered {
-        if destructive {
-            DANGER_DIM
-        } else {
-            SURFACE_RAISED
-        }
+    let (fill, border, text) = if destructive && hovered {
+        (DANGER, DANGER, BACKGROUND)
+    } else if destructive {
+        (DANGER_DIM, DANGER, DANGER)
+    } else if hovered {
+        (SURFACE_RAISED, LINE_STRONG, TEXT)
     } else {
-        BACKGROUND
-    };
-    let border = if hovered { LINE_STRONG } else { LINE };
-    let text = if destructive && hovered {
-        DANGER
-    } else {
-        TEXT_SECONDARY
+        (SURFACE, LINE, TEXT_SECONDARY)
     };
 
     draw_card(painter, rect, fill, border, 14.0);
@@ -743,7 +767,7 @@ fn draw_window_button(
         rect.center(),
         Align2::CENTER_CENTER,
         label,
-        FontId::new(18.0, FontFamily::Proportional),
+        FontId::new(UI_FONT_SIZE, FontFamily::Proportional),
         text,
     );
 }
@@ -820,28 +844,28 @@ fn draw_status_tile(
 ) {
     draw_card(painter, rect, SURFACE_RAISED, LINE, 18.0);
     painter.circle_filled(
-        Pos2::new(rect.left() + 11.0, rect.top() + 10.0),
-        4.0,
+        Pos2::new(rect.left() + 14.5, rect.top() + 13.5),
+        3.5,
         status_color,
     );
     draw_text(
         painter,
         Pos2::new(rect.left() + 24.0, rect.top() + 3.0),
         label,
-        12.0,
+        UI_FONT_SIZE,
         TEXT_MUTED,
     );
     draw_text(
         painter,
         Pos2::new(rect.left() + 12.0, rect.top() + 23.0),
         value,
-        13.0,
+        UI_FONT_SIZE,
         TEXT,
     );
 }
 
 fn draw_input_background(painter: &egui::Painter, rect: Rect) {
-    draw_card(painter, rect, SURFACE_RAISED, LINE, 12.0);
+    draw_card(painter, rect, SURFACE_RAISED, LINE_STRONG, rect.height());
 }
 
 fn draw_primary_button(
@@ -851,26 +875,20 @@ fn draw_primary_button(
     hovered: bool,
     disabled: bool,
 ) {
-    let fill = if disabled {
-        SURFACE_RAISED
-    } else if hovered {
+    let fill = if disabled { ACCENT_DIM } else { ACCENT };
+    let border = if hovered && !disabled {
+        TEXT_SECONDARY
+    } else {
         ACCENT
-    } else {
-        ACCENT_DIM
     };
-    let border = if disabled { LINE } else { ACCENT };
-    let text = if hovered && !disabled {
-        BACKGROUND
-    } else {
-        TEXT
-    };
+    let text = if disabled { TEXT_SECONDARY } else { BACKGROUND };
 
-    draw_card(painter, rect, fill, border, 14.0);
+    draw_card(painter, rect, fill, border, rect.height());
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,
         label,
-        FontId::new(13.0, FontFamily::Proportional),
+        FontId::new(UI_FONT_SIZE, FontFamily::Proportional),
         text,
     );
 }
@@ -881,14 +899,14 @@ fn draw_secondary_button(painter: &egui::Painter, rect: Rect, label: &str, hover
         rect,
         if hovered { SURFACE_RAISED } else { SURFACE },
         if hovered { LINE_STRONG } else { LINE },
-        15.0,
+        rect.height(),
     );
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,
         label,
-        FontId::new(13.0, FontFamily::Proportional),
-        TEXT_SECONDARY,
+        FontId::new(UI_FONT_SIZE, FontFamily::Proportional),
+        if hovered { TEXT } else { TEXT_SECONDARY },
     );
 }
 
@@ -911,18 +929,18 @@ fn draw_toggle(painter: &egui::Painter, rect: Rect, label: &str, enabled: bool, 
         rect,
         if enabled { ACCENT_DIM } else { SURFACE_RAISED },
         border,
-        15.0,
+        rect.height(),
     );
     painter.circle_filled(
-        Pos2::new(rect.left() + 10.0, rect.center().y),
-        4.0,
+        Pos2::new(rect.left() + 13.5, rect.center().y),
+        3.5,
         if enabled { ACCENT } else { TEXT_MUTED },
     );
     painter.text(
         Pos2::new(rect.left() + 25.0, rect.center().y),
         Align2::LEFT_CENTER,
         label,
-        FontId::new(13.0, FontFamily::Proportional),
+        FontId::new(UI_FONT_SIZE, FontFamily::Proportional),
         text,
     );
 }
@@ -959,7 +977,7 @@ fn draw_log_text(
             line_rect.left_top(),
             Align2::LEFT_TOP,
             &line.text,
-            FontId::new(14.0, FontFamily::Monospace),
+            FontId::new(MONO_FONT_SIZE, FontFamily::Monospace),
             line.color,
         );
         y += LOG_LINE_HEIGHT;
@@ -1090,84 +1108,6 @@ fn log_chars_per_line(rect: Rect) -> usize {
 
 fn log_visible_line_count(rect: Rect) -> usize {
     ((rect.height().max(LOG_LINE_HEIGHT) / LOG_LINE_HEIGHT) as usize).max(1)
-}
-
-fn draw_mascot(painter: &egui::Painter, rect: Rect) {
-    let size = rect.width().min(rect.height());
-    let center = rect.center() + Vec2::new(0.0, size * 0.05);
-    let head_radius = size * 0.31;
-    let ear_width = size * 0.19;
-    let ear_top = rect.top() + size * 0.08;
-    let ear_base = center.y - head_radius * 0.58;
-    let transparent_stroke = Stroke::new(0.0_f32, Color32::TRANSPARENT);
-
-    painter.add(egui::Shape::convex_polygon(
-        vec![
-            Pos2::new(center.x - head_radius * 0.78, ear_base),
-            Pos2::new(center.x - head_radius * 0.78 - ear_width, ear_top),
-            Pos2::new(center.x - head_radius * 0.18, ear_base - size * 0.03),
-        ],
-        ACCENT,
-        transparent_stroke,
-    ));
-    painter.add(egui::Shape::convex_polygon(
-        vec![
-            Pos2::new(center.x + head_radius * 0.78, ear_base),
-            Pos2::new(center.x + head_radius * 0.78 + ear_width, ear_top),
-            Pos2::new(center.x + head_radius * 0.18, ear_base - size * 0.03),
-        ],
-        ACCENT,
-        transparent_stroke,
-    ));
-    painter.circle_filled(center, head_radius, ACCENT);
-    painter.circle_filled(
-        center + Vec2::new(-head_radius * 0.36, -head_radius * 0.08),
-        size * 0.035,
-        BACKGROUND,
-    );
-    painter.circle_filled(
-        center + Vec2::new(head_radius * 0.36, -head_radius * 0.08),
-        size * 0.035,
-        BACKGROUND,
-    );
-    painter.add(egui::Shape::convex_polygon(
-        vec![
-            center + Vec2::new(-size * 0.04, size * 0.05),
-            center + Vec2::new(size * 0.04, size * 0.05),
-            center + Vec2::new(0.0, size * 0.11),
-        ],
-        BACKGROUND,
-        transparent_stroke,
-    ));
-}
-
-fn collector_icon() -> egui::IconData {
-    const SIZE: usize = 32;
-    let mut rgba = vec![0_u8; SIZE * SIZE * 4];
-
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let index = (y * SIZE + x) * 4;
-            let dx = x as i32 - 16;
-            let dy = y as i32 - 17;
-            let inside_head = dx * dx + dy * dy <= 11 * 11;
-            let inside_left_ear = y < 11 && x > 5 && x < 15 && y + 3 > 12 - x / 2;
-            let inside_right_ear = y < 11 && x > 17 && x < 27 && y + 3 > x / 2 - 5;
-            let color = if inside_head || inside_left_ear || inside_right_ear {
-                [0xcb, 0xff, 0x2d, 255]
-            } else {
-                [0x02, 0x03, 0x02, 255]
-            };
-
-            rgba[index..index + 4].copy_from_slice(&color);
-        }
-    }
-
-    egui::IconData {
-        rgba,
-        width: SIZE as u32,
-        height: SIZE as u32,
-    }
 }
 
 fn status_copy(runtime: &RuntimeSnapshot) -> (&'static str, &'static str, Color32) {
@@ -1314,8 +1254,16 @@ mod tests {
     }
 
     #[test]
-    fn collector_icon_has_expected_dimensions() {
-        let icon = collector_icon();
+    fn macos_font_metrics_match_windows_font_contract() {
+        assert_eq!(UI_FONT_SIZE, 16.0);
+        assert_eq!(TITLE_FONT_SIZE, 29.0);
+        assert_eq!(SECTION_FONT_SIZE, 21.0);
+        assert_eq!(MONO_FONT_SIZE, 14.0);
+    }
+
+    #[test]
+    fn collector_icon_uses_shared_mascot_source() {
+        let icon = macos_mascot::icon(32);
 
         assert_eq!(icon.width, 32);
         assert_eq!(icon.height, 32);
