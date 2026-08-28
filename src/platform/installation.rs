@@ -19,6 +19,19 @@ impl Installation {
         launch_installed(&target, Some(activation_token), device_name)
     }
 
+    pub fn install_current_executable() -> Result<()> {
+        let target = installation_path()?;
+
+        ensure_installed(&target)
+    }
+
+    pub fn launch_current_installation() -> Result<()> {
+        let target = installation_path()?;
+
+        validate_existing_installation(&target)?;
+        launch_installed(&target, None, None)
+    }
+
     pub fn migrate_existing_and_launch() -> Result<()> {
         let target = installation_path()?;
 
