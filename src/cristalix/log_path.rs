@@ -133,7 +133,10 @@ fn resolve_cristalix_log_candidate(candidate: &Path) -> Option<PathBuf> {
 
     let directory = if candidate.is_dir() {
         candidate
-    } else if candidate.file_name().is_some_and(|name| name == PREFERRED_LOG_FILE) {
+    } else if candidate
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case(PREFERRED_LOG_FILE))
+    {
         candidate.parent()?
     } else {
         return None;
@@ -167,7 +170,6 @@ fn newest_log_in_directory(directory: &Path) -> Option<PathBuf> {
             .metadata()
             .and_then(|metadata| metadata.modified())
             .unwrap_or(SystemTime::UNIX_EPOCH);
-
         let should_replace = newest
             .as_ref()
             .is_none_or(|(current_modified, current_path)| {
@@ -223,7 +225,7 @@ mod tests {
 
     #[test]
     fn preferred_latest_log_wins_inside_cristalix_logs_directory() {
-        let directory = temporary_cristalix_logs_directory();
+        let (root, directory) = temporary_cristalix_logs_directory();
         let preferred = directory.join("latest.log");
         let session = directory.join("2026-08-29.log");
 
@@ -232,12 +234,12 @@ mod tests {
 
         assert_eq!(newest_log_in_directory(&directory), Some(preferred));
 
-        let _ = fs::remove_dir_all(directory.parent().unwrap().parent().unwrap().parent().unwrap());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn falls_back_to_log_file_inside_exact_cristalix_logs_directory() {
-        let directory = temporary_cristalix_logs_directory();
+        let (root, directory) = temporary_cristalix_logs_directory();
         let session = directory.join("current-session.log");
         let unrelated = directory.join("notes.txt");
 
@@ -248,7 +250,7 @@ mod tests {
 
         assert_eq!(resolve_cristalix_log_candidate(&candidate), Some(session));
 
-        let _ = fs::remove_dir_all(directory.parent().unwrap().parent().unwrap().parent().unwrap());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -290,13 +292,12 @@ mod tests {
         let _ = fs::remove_dir_all(directory);
     }
 
-    fn temporary_cristalix_logs_directory() -> PathBuf {
-        let root = std::env::temp_dir()
-            .join(format!("mnemos-log-dir-{}", Uuid::now_v7()))
-            .join("cristalix");
-        let directory = cristalix_log_directory(root);
+    fn temporary_cristalix_logs_directory() -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("mnemos-log-dir-{}", Uuid::now_v7()));
+        let directory = cristalix_log_directory(root.join("cristalix"));
 
         fs::create_dir_all(&directory).unwrap();
-        directory
+
+        (root, directory)
     }
 }
