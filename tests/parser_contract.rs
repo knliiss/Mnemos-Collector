@@ -54,7 +54,7 @@ fn parses_supported_drop_types_and_grammatical_rarity_forms() {
             ItemRarity::Secret,
         ),
         (
-            "[Магистр] PlayerBook [#13] выбил \"Мифическую\" книгу Книга бездны",
+            "[Магистр] PlayerBook [#13] выбил \"Мифическая\" книгу Книга бездны",
             ItemType::Book,
             ItemRarity::Mythical,
         ),

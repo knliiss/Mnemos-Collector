@@ -240,6 +240,10 @@ fn parse_global(payload: &str) -> Option<CollectorEvent> {
         GlobalEventType::Eclipse
     } else if payload.contains("тепло солнца касается вашей кожи") {
         GlobalEventType::Explosion
+    } else if payload.contains("По мере того, как комета проносится по небу")
+        && payload.contains("чувство надвигающегося хаоса")
+    {
+        GlobalEventType::CometChaos
     } else {
         return None;
     };
@@ -285,7 +289,12 @@ fn parse_item_type(raw: &str) -> Option<ItemType> {
 }
 
 fn extract_nickname(player_prefix: &str) -> Option<String> {
-    let candidate = if let Some((_, suffix)) = player_prefix.rsplit_once('┃') {
+    let decorated_suffix = player_prefix
+        .rsplit_once('┃')
+        .map(|(_, suffix)| suffix)
+        .or_else(|| player_prefix.rsplit_once('|').map(|(_, suffix)| suffix));
+
+    let candidate = if let Some(suffix) = decorated_suffix {
         suffix
             .split_whitespace()
             .find(|token| NICKNAME.is_match(token))
