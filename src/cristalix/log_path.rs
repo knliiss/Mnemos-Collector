@@ -133,10 +133,10 @@ fn resolve_cristalix_log_candidate(candidate: &Path) -> Option<PathBuf> {
 
     let directory = if candidate.is_dir() {
         candidate
-    } else if candidate
-        .file_name()
-        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case(PREFERRED_LOG_FILE))
-    {
+    } else if candidate.file_name().is_some_and(|name| {
+        name.to_string_lossy()
+            .eq_ignore_ascii_case(PREFERRED_LOG_FILE)
+    }) {
         candidate.parent()?
     } else {
         return None;
