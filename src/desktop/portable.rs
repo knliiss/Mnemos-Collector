@@ -9,18 +9,17 @@ use tokio::runtime::Handle;
 use zeroize::Zeroizing;
 
 use crate::application::CollectorApplication;
-use crate::cristalix::{
-    clear_configured_latest_log_path, configured_latest_log_path,
-    set_configured_latest_log_path,
-};
+use crate::cristalix::{clear_configured_latest_log_path, configured_latest_log_path};
+#[cfg(target_os = "macos")]
+use crate::cristalix::set_configured_latest_log_path;
 use crate::diagnostics::{self, RuntimeSnapshot};
 use crate::platform::{Autostart, Installation};
 use crate::provisioning::{ProvisioningClient, default_device_name};
 use crate::security::CredentialStore;
 
+use super::DesktopLaunchContext;
 #[cfg(target_os = "macos")]
 use super::macos_native::{self, MacStatusItem};
-use super::DesktopLaunchContext;
 
 const WINDOW_WIDTH: f32 = 980.0;
 const WINDOW_HEIGHT: f32 = 690.0;
@@ -270,8 +269,7 @@ impl PortableDesktop {
     fn handle_window_close(&self, context: &egui::Context) {
         #[cfg(target_os = "macos")]
         {
-            let close_requested =
-                context.input(|input| input.viewport().close_requested());
+            let close_requested = context.input(|input| input.viewport().close_requested());
 
             if close_requested && !self.exit_requested {
                 context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -495,9 +493,8 @@ impl PortableDesktop {
                     );
                 }
                 Err(error) => {
-                    self.log_source_error = Some(format!(
-                        "Не удалось сохранить выбранный лог: {error}"
-                    ));
+                    self.log_source_error =
+                        Some(format!("Не удалось сохранить выбранный лог: {error}"));
                 }
             },
             Ok(None) => {}
@@ -519,7 +516,12 @@ impl PortableDesktop {
                 ui.set_min_height((desired_height - 30.0).max(150.0));
 
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("ЖУРНАЛ COLLECTOR").size(11.0).color(ACCENT).strong());
+                    ui.label(
+                        RichText::new("ЖУРНАЛ COLLECTOR")
+                            .size(11.0)
+                            .color(ACCENT)
+                            .strong(),
+                    );
 
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                         let diagnostics_label = if diagnostics::debug_enabled() {
@@ -534,10 +536,7 @@ impl PortableDesktop {
 
                         if ui.button("Копировать всё").clicked() {
                             context.copy_text(diagnostics::recent_text());
-                            diagnostics::info(
-                                "desktop",
-                                "Journal copied to clipboard as text",
-                            );
+                            diagnostics::info("desktop", "Journal copied to clipboard as text");
                         }
                     });
                 });
@@ -573,8 +572,7 @@ impl PortableDesktop {
                                 }
 
                                 for line in log_text.lines() {
-                                    let selected =
-                                        self.selected_log_entry.as_deref() == Some(line);
+                                    let selected = self.selected_log_entry.as_deref() == Some(line);
                                     let text = RichText::new(line)
                                         .monospace()
                                         .size(11.5)
@@ -687,7 +685,10 @@ fn status_tile(ui: &mut egui::Ui, label: &str, value: &str, color: Color32) {
         });
 }
 
-fn status_copy(provisioned: bool, runtime: &RuntimeSnapshot) -> (&'static str, &'static str, Color32) {
+fn status_copy(
+    provisioned: bool,
+    runtime: &RuntimeSnapshot,
+) -> (&'static str, &'static str, Color32) {
     if !provisioned {
         return (
             "Требуется активация",
