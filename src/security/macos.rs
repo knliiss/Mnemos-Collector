@@ -40,10 +40,7 @@ unsafe extern "C" {
 
     fn SecKeychainItemDelete(item_ref: *mut c_void) -> i32;
 
-    fn SecKeychainItemFreeContent(
-        attribute_list: *const c_void,
-        data: *mut c_void,
-    ) -> i32;
+    fn SecKeychainItemFreeContent(attribute_list: *const c_void, data: *mut c_void) -> i32;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -78,9 +75,8 @@ pub fn load(service: &str, account: &str) -> Result<Option<String>> {
         bail!("macOS Keychain returned a credential without password data");
     }
 
-    let bytes = unsafe {
-        std::slice::from_raw_parts(password_data.cast::<u8>(), password_length as usize)
-    };
+    let bytes =
+        unsafe { std::slice::from_raw_parts(password_data.cast::<u8>(), password_length as usize) };
     let value = String::from_utf8(bytes.to_vec())
         .map_err(|error| anyhow::anyhow!("macOS Keychain credential is not valid UTF-8: {error}"));
     let free_status = unsafe { SecKeychainItemFreeContent(null(), password_data) };
