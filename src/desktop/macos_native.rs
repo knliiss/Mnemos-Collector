@@ -57,8 +57,7 @@ impl MacStatusItem {
                 ns_string("Mnemos Collector")?,
             );
 
-            let application =
-                message_id_0(class("NSApplication")?, selector("sharedApplication")?);
+            let application = message_id_0(class("NSApplication")?, selector("sharedApplication")?);
             let menu = create_menu(application)?;
 
             message_void_id(status_item, selector("setMenu:")?, menu);
@@ -190,11 +189,7 @@ unsafe fn create_menu(application: Object) -> Result<Object> {
     Ok(menu)
 }
 
-unsafe fn create_menu_item(
-    title: &str,
-    action: Selector,
-    target: Object,
-) -> Result<Object> {
+unsafe fn create_menu_item(title: &str, action: Selector, target: Object) -> Result<Object> {
     let menu_item = unsafe { message_id_0(class("NSMenuItem")?, selector("alloc")?) };
     let menu_item = unsafe {
         message_id_id_selector_id(
@@ -272,11 +267,7 @@ unsafe fn message_id_f64(receiver: Object, selector: Selector, value: f64) -> Ob
     unsafe { function(receiver, selector, value) }
 }
 
-unsafe fn message_id_c_char(
-    receiver: Object,
-    selector: Selector,
-    value: *const c_char,
-) -> Object {
+unsafe fn message_id_c_char(receiver: Object, selector: Selector, value: *const c_char) -> Object {
     let function: unsafe extern "C" fn(Object, Selector, *const c_char) -> Object =
         unsafe { std::mem::transmute(objc_msgSend as *const ()) };
 
