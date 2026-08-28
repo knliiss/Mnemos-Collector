@@ -9,9 +9,9 @@ use tokio::runtime::Handle;
 use zeroize::Zeroizing;
 
 use crate::application::CollectorApplication;
-use crate::cristalix::{clear_configured_latest_log_path, configured_latest_log_path};
 #[cfg(target_os = "macos")]
 use crate::cristalix::set_configured_latest_log_path;
+use crate::cristalix::{clear_configured_latest_log_path, configured_latest_log_path};
 use crate::diagnostics::{self, RuntimeSnapshot};
 use crate::platform::{Autostart, Installation};
 use crate::provisioning::{ProvisioningClient, default_device_name};
