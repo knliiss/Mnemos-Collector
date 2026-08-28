@@ -266,13 +266,13 @@ impl PortableDesktop {
         }
     }
 
-    fn handle_window_close(&self, context: &egui::Context) {
+    fn handle_window_close(&self, _context: &egui::Context) {
         #[cfg(target_os = "macos")]
         {
-            let close_requested = context.input(|input| input.viewport().close_requested());
+            let close_requested = _context.input(|input| input.viewport().close_requested());
 
             if close_requested && !self.exit_requested {
-                context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                _context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 macos_native::hide_application();
             }
         }
@@ -509,7 +509,7 @@ impl PortableDesktop {
 
         egui::Frame::new()
             .fill(SURFACE)
-            .stroke(Stroke::new(1.0, LINE))
+            .stroke(Stroke::new(1.0_f32, LINE))
             .corner_radius(18)
             .inner_margin(14)
             .show(ui, |ui| {
@@ -553,7 +553,7 @@ impl PortableDesktop {
 
                 egui::Frame::new()
                     .fill(BACKGROUND)
-                    .stroke(Stroke::new(1.0, LINE))
+                    .stroke(Stroke::new(1.0_f32, LINE))
                     .corner_radius(12)
                     .inner_margin(10)
                     .show(ui, |ui| {
@@ -641,11 +641,11 @@ fn configure_style(context: &egui::Context) {
     visuals.extreme_bg_color = BACKGROUND;
     visuals.faint_bg_color = SURFACE;
     visuals.widgets.noninteractive.bg_fill = SURFACE;
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, LINE);
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, LINE);
     visuals.widgets.inactive.bg_fill = SURFACE_RAISED;
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, LINE);
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, LINE);
     visuals.widgets.hovered.bg_fill = SURFACE_HOVER;
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, ACCENT);
     visuals.widgets.active.bg_fill = Color32::from_rgb(40, 58, 47);
     visuals.selection.bg_fill = Color32::from_rgb(55, 104, 70);
     visuals.selection.stroke.color = ACCENT;
@@ -663,7 +663,7 @@ fn configure_style(context: &egui::Context) {
 fn card_frame(radius: u8) -> egui::Frame {
     egui::Frame::new()
         .fill(SURFACE)
-        .stroke(Stroke::new(1.0, LINE))
+        .stroke(Stroke::new(1.0_f32, LINE))
         .corner_radius(radius)
         .inner_margin(16)
 }
@@ -671,7 +671,7 @@ fn card_frame(radius: u8) -> egui::Frame {
 fn status_tile(ui: &mut egui::Ui, label: &str, value: &str, color: Color32) {
     egui::Frame::new()
         .fill(SURFACE_RAISED)
-        .stroke(Stroke::new(1.0, LINE))
+        .stroke(Stroke::new(1.0_f32, LINE))
         .corner_radius(12)
         .inner_margin(10)
         .show(ui, |ui| {
@@ -788,7 +788,7 @@ fn draw_mascot(ui: &mut egui::Ui, size: f32) {
     let ear_width = size * 0.19;
     let ear_top = rect.top() + size * 0.08;
     let ear_base = center.y - head_radius * 0.58;
-    let transparent_stroke = Stroke::new(0.0, Color32::TRANSPARENT);
+    let transparent_stroke = Stroke::new(0.0_f32, Color32::TRANSPARENT);
 
     painter.add(egui::Shape::convex_polygon(
         vec![
