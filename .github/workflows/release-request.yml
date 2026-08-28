@@ -1,0 +1,152 @@
+name: Release Request
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/release-request"
+
+concurrency:
+  group: collector-release-request
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  RUST_VERSION: 1.98.0
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        shell: bash
+        run: rustup toolchain install "$RUST_VERSION" --profile minimal
+
+      - name: Validate release request
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(tr -d '[:space:]' < .github/release-request)"
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo ".github/release-request must contain a stable MAJOR.MINOR.PATCH version."
+            exit 1
+          fi
+
+          tag="v$version"
+
+          git fetch origin main --tags --force
+
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Release tag $tag already exists."
+            exit 1
+          fi
+
+          current_version="$(
+            sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml \
+              | head -n 1
+          )"
+
+          if [ "$version" = "$current_version" ]; then
+            echo "Requested version $version already matches Cargo.toml."
+            exit 1
+          fi
+
+          highest_version="$(printf '%s\n%s\n' "$current_version" "$version" | sort -V | tail -n 1)"
+
+          if [ "$highest_version" != "$version" ]; then
+            echo "Requested version $version must be newer than current version $current_version."
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Update Cargo version
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path("Cargo.toml")
+          text = path.read_text()
+          version = os.environ["VERSION"]
+
+          marker = 'version = "'
+          start = text.find(marker)
+
+          if start < 0:
+              raise SystemExit("Cargo.toml package version was not found")
+
+          value_start = start + len(marker)
+          value_end = text.find('"', value_start)
+
+          if value_end < 0:
+              raise SystemExit("Cargo.toml package version is malformed")
+
+          text = text[:value_start] + version + text[value_end:]
+          path.write_text(text)
+          PY
+
+          cargo +"$RUST_VERSION" metadata --format-version 1 --no-deps > /dev/null
+
+          grep -A2 -F 'name = "mnemos-collector"' Cargo.lock \
+            | grep -Fq "version = \"$VERSION\""
+
+          git diff --check
+
+      - name: Commit release version
+        id: commit
+        shell: bash
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add Cargo.toml Cargo.lock
+          git commit -m "Release $TAG"
+          git push origin HEAD:main
+
+          release_sha="$(git rev-parse HEAD)"
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Create release tag
+        shell: bash
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_SHA: ${{ steps.commit.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+
+          git tag "$TAG" "$RELEASE_SHA"
+          git push origin "refs/tags/$TAG"
+
+      - name: Start release workflow
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh workflow run release.yml --ref main --field tag="$TAG"
