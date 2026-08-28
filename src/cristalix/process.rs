@@ -1,9 +1,10 @@
 use std::collections::{BTreeSet, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use sysinfo::{Pid, Process, ProcessesToUpdate, System};
 
 const MAX_PARENT_DEPTH: usize = 5;
+const MAX_LOG_SEARCH_ANCESTORS: usize = 6;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CristalixProcessSnapshot {
@@ -152,42 +153,88 @@ fn process_locations(process: &Process) -> Vec<String> {
 fn references_cristalix_game(value: &str) -> bool {
     let normalized = value.replace('\\', "/").to_ascii_lowercase();
 
-    normalized.contains("/.cristalix/")
-        && (normalized.contains("/updates/minigames/")
-            || normalized.contains("/updates/minigames")
-            || normalized.contains("minigames"))
+    normalized.contains("minigames") && !normalized.contains("mnemos-collector")
 }
 
 fn collect_log_candidates(locations: &[String], candidates: &mut BTreeSet<PathBuf>) {
     for location in locations {
-        if let Some(path) = latest_log_from_location(location) {
+        if let Some(path) = explicit_latest_log_from_location(location) {
             candidates.insert(path);
         }
+
+        if let Some(path) = minigames_log_from_location(location) {
+            candidates.insert(path);
+        }
+
+        collect_existing_path_candidates(location, candidates);
     }
 }
 
-fn latest_log_from_location(location: &str) -> Option<PathBuf> {
-    let normalized = location.replace('\\', "/");
-    let lowercase = normalized.to_ascii_lowercase();
-    let cristalix_start = lowercase.find(".cristalix")?;
-    let cristalix_end = cristalix_start + ".cristalix".len();
-    let root_with_prefix = normalized.get(..cristalix_end)?;
-    let root = root_with_prefix
-        .rsplit_once('=')
-        .map_or(root_with_prefix, |(_, path)| path)
-        .trim_matches(['"', '\'', ' ']);
+fn explicit_latest_log_from_location(location: &str) -> Option<PathBuf> {
+    let value = extract_path_value(location)?;
+    let normalized = value.replace('\\', "/").to_ascii_lowercase();
 
-    if root.is_empty() {
+    if normalized.ends_with("/latest.log") || normalized == "latest.log" {
+        Some(PathBuf::from(value))
+    } else {
+        None
+    }
+}
+
+fn minigames_log_from_location(location: &str) -> Option<PathBuf> {
+    let value = extract_path_value(location)?;
+    let normalized = value.replace('\\', "/");
+    let lowercase = normalized.to_ascii_lowercase();
+    let minigames_start = lowercase.find("minigames")?;
+    let minigames_end = minigames_start + "minigames".len();
+    let game_root = normalized.get(..minigames_end)?.trim();
+
+    if game_root.is_empty() {
         return None;
     }
 
-    Some(
-        PathBuf::from(root)
-            .join("updates")
-            .join("Minigames")
-            .join("logs")
-            .join("latest.log"),
-    )
+    Some(PathBuf::from(game_root).join("logs").join("latest.log"))
+}
+
+fn collect_existing_path_candidates(location: &str, candidates: &mut BTreeSet<PathBuf>) {
+    let Some(value) = extract_path_value(location) else {
+        return;
+    };
+    let path = PathBuf::from(value);
+
+    let root = if path.is_dir() {
+        Some(path.as_path())
+    } else if path.is_file() {
+        path.parent()
+    } else {
+        None
+    };
+
+    let Some(root) = root else {
+        return;
+    };
+
+    for ancestor in root.ancestors().take(MAX_LOG_SEARCH_ANCESTORS) {
+        add_log_candidates_for_directory(ancestor, candidates);
+    }
+}
+
+fn add_log_candidates_for_directory(directory: &Path, candidates: &mut BTreeSet<PathBuf>) {
+    candidates.insert(directory.join("logs").join("latest.log"));
+    candidates.insert(directory.join("latest.log"));
+}
+
+fn extract_path_value(location: &str) -> Option<&str> {
+    let value = location
+        .rsplit_once('=')
+        .map_or(location, |(_, value)| value)
+        .trim_matches(['"', '\'', ' ']);
+
+    if value.is_empty() || (!value.contains('/') && !value.contains('\\')) {
+        return None;
+    }
+
+    Some(value)
 }
 
 #[cfg(test)]
@@ -195,8 +242,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extracts_cristalix_root_from_windows_java_argument() {
-        let path = latest_log_from_location(
+    fn extracts_log_from_windows_java_argument() {
+        let path = minigames_log_from_location(
             r#"-Djava.library.path=C:\Users\Player\.cristalix\updates\Minigames\natives"#,
         )
         .unwrap();
@@ -208,33 +255,32 @@ mod tests {
     }
 
     #[test]
-    fn extracts_cristalix_root_from_executable_path() {
-        let path = latest_log_from_location(
-            r#"C:\Users\Player\.cristalix\updates\Minigames\runtime\bin\javaw.exe"#,
+    fn extracts_log_from_arbitrary_minigames_location() {
+        let path = minigames_log_from_location(
+            "/Volumes/Games/Cristalix Custom/Minigames/runtime/bin/java",
         )
         .unwrap();
-        let normalized = path.to_string_lossy().replace('\\', "/");
 
-        assert!(
-            normalized.ends_with("C:/Users/Player/.cristalix/updates/Minigames/logs/latest.log")
+        assert_eq!(
+            path,
+            PathBuf::from("/Volumes/Games/Cristalix Custom/Minigames/logs/latest.log")
         );
     }
 
     #[test]
-    fn extracts_cristalix_root_from_unix_argument() {
-        let path = latest_log_from_location("/home/player/.cristalix/updates/Minigames/client.jar")
-            .unwrap();
+    fn extracts_log_from_unix_argument() {
+        let path = minigames_log_from_location("/home/player/games/Minigames/client.jar").unwrap();
 
         assert_eq!(
             path,
-            PathBuf::from("/home/player/.cristalix/updates/Minigames/logs/latest.log")
+            PathBuf::from("/home/player/games/Minigames/logs/latest.log")
         );
     }
 
     #[test]
     fn recognizes_minigames_locations_case_insensitively() {
         assert!(references_cristalix_game(
-            r#"C:\Users\Player\.cristalix\updates\MiniGames\runtime\bin\javaw.exe"#
+            r#"C:\Games\Cristalix\MiniGames\runtime\bin\javaw.exe"#
         ));
     }
 
@@ -246,6 +292,19 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_explicit_latest_log_argument() {
+        let path = explicit_latest_log_from_location(
+            "-Dmnemos.log=/Volumes/Games/Somewhere/logs/latest.log",
+        )
+        .unwrap();
+
+        assert_eq!(
+            path,
+            PathBuf::from("/Volumes/Games/Somewhere/logs/latest.log")
+        );
+    }
+
+    #[test]
     fn recognizes_java_and_javaw_process_names() {
         assert!(is_java_process_name("java"));
         assert!(is_java_process_name("java.exe"));
@@ -254,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_unrelated_process_locations() {
-        assert!(latest_log_from_location("C:/Program Files/Java/bin/javaw.exe").is_none());
+    fn ignores_unrelated_process_locations_without_minigames() {
+        assert!(minigames_log_from_location("C:/Program Files/Java/bin/javaw.exe").is_none());
     }
 }
