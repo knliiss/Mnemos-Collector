@@ -5,6 +5,9 @@ mod dpi;
 #[cfg(target_os = "windows")]
 mod mascot;
 #[cfg(target_os = "windows")]
+#[path = "view.rs"]
+mod base_view;
+#[cfg(target_os = "windows")]
 mod native_shell;
 #[cfg(not(target_os = "windows"))]
 mod portable;
@@ -17,6 +20,7 @@ mod theme;
 #[cfg(target_os = "windows")]
 mod tray_popup;
 #[cfg(target_os = "windows")]
+#[path = "versioned_view.rs"]
 mod view;
 #[cfg(target_os = "windows")]
 mod window_placement;
