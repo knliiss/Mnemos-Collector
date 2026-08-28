@@ -35,6 +35,7 @@ pub enum GlobalEventType {
     Moon,
     Eclipse,
     Explosion,
+    CometChaos,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
