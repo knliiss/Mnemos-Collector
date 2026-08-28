@@ -282,6 +282,11 @@ jobs:
           dmg="dist/Mnemos-Collector-macOS-${{ matrix.architecture }}.dmg"
           update="dist/mnemos-collector-update-macos-${{ matrix.architecture }}"
           mount_point="$RUNNER_TEMP/mnemos-collector-dmg"
+          expected_arch="${{ matrix.architecture }}"
+
+          if [ "$expected_arch" = "aarch64" ]; then
+            expected_arch="arm64"
+          fi
 
           test -s "$dmg"
           test -x "$update"
@@ -302,8 +307,7 @@ jobs:
 
           test -x "$executable"
           codesign --verify --deep --strict "$app"
-
-          file "$executable" | grep -Fq '${{ matrix.architecture }}'
+          file "$executable" | grep -Fq "$expected_arch"
 
           hdiutil detach "$mount_point" >/dev/null
           trap - EXIT
