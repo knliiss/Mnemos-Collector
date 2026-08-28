@@ -9,6 +9,7 @@ type Selector = *mut c_void;
 
 const NS_VARIABLE_STATUS_ITEM_LENGTH: f64 = -1.0;
 const NS_MODAL_RESPONSE_OK: isize = 1;
+const NS_IMAGE_SCALE_PROPORTIONALLY_DOWN: isize = 0;
 
 #[link(name = "objc")]
 unsafe extern "C" {
@@ -50,14 +51,14 @@ impl MacStatusItem {
                 bail!("NSStatusItem.button returned nil");
             }
 
-            message_void_id(button, selector("setTitle:")?, ns_string("M")?);
+            let application = message_id_0(class("NSApplication")?, selector("sharedApplication")?);
+            install_status_item_visual(button, application)?;
             message_void_id(
                 button,
                 selector("setToolTip:")?,
                 ns_string("Mnemos Collector")?,
             );
 
-            let application = message_id_0(class("NSApplication")?, selector("sharedApplication")?);
             let menu = create_menu(application)?;
 
             message_void_id(status_item, selector("setMenu:")?, menu);
@@ -153,6 +154,36 @@ pub fn pick_log_file() -> Result<Option<PathBuf>> {
 
         Ok(Some(PathBuf::from(path)))
     }
+}
+
+unsafe fn install_status_item_visual(button: Object, application: Object) -> Result<()> {
+    if application.is_null() {
+        unsafe {
+            message_void_id(button, selector("setTitle:")?, ns_string("M")?);
+        }
+        return Ok(());
+    }
+
+    let icon = unsafe { message_id_0(application, selector("applicationIconImage")?) };
+
+    if icon.is_null() {
+        unsafe {
+            message_void_id(button, selector("setTitle:")?, ns_string("M")?);
+        }
+        return Ok(());
+    }
+
+    unsafe {
+        message_void_id(button, selector("setTitle:")?, ns_string("")?);
+        message_void_id(button, selector("setImage:")?, icon);
+        message_void_isize(
+            button,
+            selector("setImageScaling:")?,
+            NS_IMAGE_SCALE_PROPORTIONALLY_DOWN,
+        );
+    }
+
+    Ok(())
 }
 
 unsafe fn create_menu(application: Object) -> Result<Object> {
@@ -299,6 +330,13 @@ unsafe fn message_void_bool(receiver: Object, selector: Selector, value: bool) {
         unsafe { std::mem::transmute(objc_msgSend as *const ()) };
 
     unsafe { function(receiver, selector, i8::from(value)) };
+}
+
+unsafe fn message_void_isize(receiver: Object, selector: Selector, value: isize) {
+    let function: unsafe extern "C" fn(Object, Selector, isize) =
+        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+
+    unsafe { function(receiver, selector, value) };
 }
 
 unsafe fn message_isize_0(receiver: Object, selector: Selector) -> isize {
