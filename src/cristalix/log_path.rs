@@ -1,17 +1,73 @@
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
-use directories::UserDirs;
+use directories::{ProjectDirs, UserDirs};
 
+const CONFIGURED_LOG_PATH_FILE: &str = "cristalix-log-path";
 const CRISTALIX_LOG_SUFFIX: [&str; 4] = ["updates", "Minigames", "logs", "latest.log"];
 
 pub fn default_latest_log_path() -> Option<PathBuf> {
     known_latest_log_paths().into_iter().next()
 }
 
+pub fn configured_latest_log_path() -> Option<PathBuf> {
+    let preference_path = configured_log_path_file()?;
+    let value = fs::read_to_string(preference_path).ok()?;
+    let value = value.trim();
+
+    if value.is_empty() {
+        return None;
+    }
+
+    Some(PathBuf::from(value))
+}
+
+pub fn set_configured_latest_log_path(path: &Path) -> io::Result<()> {
+    if !path.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("selected Cristalix log does not exist: {}", path.display()),
+        ));
+    }
+
+    let preference_path = configured_log_path_file().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "Collector configuration directory is unavailable",
+        )
+    })?;
+    let parent = preference_path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Collector log preference path has no parent directory",
+        )
+    })?;
+
+    fs::create_dir_all(parent)?;
+    fs::write(preference_path, path.to_string_lossy().as_bytes())
+}
+
+pub fn clear_configured_latest_log_path() -> io::Result<()> {
+    let Some(preference_path) = configured_log_path_file() else {
+        return Ok(());
+    };
+
+    match fs::remove_file(preference_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 pub fn discover_latest_log(
     cached_path: Option<&Path>,
     process_candidates: &[PathBuf],
 ) -> Option<PathBuf> {
+    if let Some(path) = configured_latest_log_path().filter(|path| path.is_file()) {
+        return Some(path);
+    }
+
     if let Some(path) = process_candidates.iter().find(|path| path.is_file()) {
         return Some(path.clone());
     }
@@ -59,6 +115,12 @@ fn latest_log_in_cristalix_root(root: PathBuf) -> PathBuf {
     CRISTALIX_LOG_SUFFIX
         .iter()
         .fold(root, |path, component| path.join(component))
+}
+
+fn configured_log_path_file() -> Option<PathBuf> {
+    let project_dirs = ProjectDirs::from("rest", "knalis", "Mnemos Collector")?;
+
+    Some(project_dirs.config_dir().join(CONFIGURED_LOG_PATH_FILE))
 }
 
 #[cfg(test)]
