@@ -70,7 +70,14 @@ fn ensure_installed(target: &Path) -> Result<()> {
 
     if target.exists() {
         validate_existing_installation(target)?;
-        return Ok(());
+
+        let installed = target
+            .canonicalize()
+            .context("failed to resolve existing collector installation")?;
+
+        if current == installed {
+            return Ok(());
+        }
     }
 
     let parent = target
@@ -91,7 +98,7 @@ fn ensure_installed(target: &Path) -> Result<()> {
     preserve_executable_permissions(&current, &temporary)?;
     sync_file(&temporary)?;
 
-    if let Err(error) = fs::rename(&temporary, target) {
+    if let Err(error) = replace_installation(&temporary, target) {
         let _ = remove_if_exists(&temporary);
         return Err(error).context("failed to finalize collector installation");
     }
@@ -149,6 +156,32 @@ fn launch_installed(
     })?;
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn replace_installation(source: &Path, target: &Path) -> Result<()> {
+    fs::rename(source, target).with_context(|| {
+        format!(
+            "failed to atomically replace {} with {}",
+            target.display(),
+            source.display()
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn replace_installation(source: &Path, target: &Path) -> Result<()> {
+    if target.exists() {
+        remove_if_exists(target)?;
+    }
+
+    fs::rename(source, target).with_context(|| {
+        format!(
+            "failed to replace {} with {}",
+            target.display(),
+            source.display()
+        )
+    })
 }
 
 fn sync_file(path: &Path) -> Result<()> {
@@ -213,5 +246,24 @@ mod tests {
         assert_eq!(second.parent(), target.parent());
         assert_ne!(first, second);
         assert!(first.to_string_lossy().contains(".install-"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_replacement_overwrites_existing_installation() {
+        let directory = std::env::temp_dir().join(format!("mnemos-install-{}", Uuid::now_v7()));
+        let source = directory.join("source");
+        let target = directory.join("target");
+
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(&source, b"new").unwrap();
+        fs::write(&target, b"old").unwrap();
+
+        replace_installation(&source, &target).unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        assert!(!source.exists());
+
+        let _ = fs::remove_dir_all(directory);
     }
 }
