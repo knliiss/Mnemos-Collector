@@ -15,23 +15,16 @@ permissions:
   contents: write
   actions: write
 
-env:
-  RUST_VERSION: 1.98.0
-
 jobs:
   prepare-release:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
-      - name: Install Rust
-        shell: bash
-        run: rustup toolchain install "$RUST_VERSION" --profile minimal
 
       - name: Validate release request
         id: release
@@ -84,29 +77,43 @@ jobs:
 
           python3 - <<'PY'
           import os
+          import re
           from pathlib import Path
 
-          path = Path("Cargo.toml")
-          text = path.read_text()
           version = os.environ["VERSION"]
 
-          marker = 'version = "'
-          start = text.find(marker)
+          cargo_toml = Path("Cargo.toml")
+          manifest = cargo_toml.read_text()
+          manifest_pattern = re.compile(
+              r'(?m)^(\[package\]\nname = "mnemos-collector"\nversion = ")[^"]+("$)'
+          )
+          manifest, manifest_count = manifest_pattern.subn(
+              rf'\g<1>{version}\g<2>',
+              manifest,
+              count=1,
+          )
 
-          if start < 0:
-              raise SystemExit("Cargo.toml package version was not found")
+          if manifest_count != 1:
+              raise SystemExit("Cargo.toml package version was not found uniquely")
 
-          value_start = start + len(marker)
-          value_end = text.find('"', value_start)
+          cargo_toml.write_text(manifest)
 
-          if value_end < 0:
-              raise SystemExit("Cargo.toml package version is malformed")
+          cargo_lock = Path("Cargo.lock")
+          lockfile = cargo_lock.read_text()
+          lock_pattern = re.compile(
+              r'(?m)^(\[\[package\]\]\nname = "mnemos-collector"\nversion = ")[^"]+("$)'
+          )
+          lockfile, lock_count = lock_pattern.subn(
+              rf'\g<1>{version}\g<2>',
+              lockfile,
+              count=1,
+          )
 
-          text = text[:value_start] + version + text[value_end:]
-          path.write_text(text)
+          if lock_count != 1:
+              raise SystemExit("Cargo.lock root package version was not found uniquely")
+
+          cargo_lock.write_text(lockfile)
           PY
-
-          cargo +"$RUST_VERSION" metadata --format-version 1 --no-deps > /dev/null
 
           grep -A2 -F 'name = "mnemos-collector"' Cargo.lock \
             | grep -Fq "version = \"$VERSION\""
