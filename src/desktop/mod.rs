@@ -6,9 +6,9 @@ mod clipboard;
 #[cfg(target_os = "windows")]
 mod dpi;
 #[cfg(target_os = "macos")]
-mod macos_native;
+mod macos_desktop;
 #[cfg(target_os = "macos")]
-mod macos_shell;
+mod macos_native;
 #[cfg(target_os = "windows")]
 mod mascot;
 #[cfg(target_os = "windows")]
@@ -53,7 +53,7 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
 
 #[cfg(target_os = "macos")]
 pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
-    let Some(_instance_guard) = portable_instance::InstanceGuard::acquire()? else {
+    let Some(instance_guard) = portable_instance::InstanceGuard::acquire()? else {
         crate::diagnostics::info(
             "desktop",
             "Another Collector instance is already running; duplicate launch ignored",
@@ -61,7 +61,15 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
         return Ok(());
     };
 
-    macos_shell::run(context, runtime)
+    let launch_installed = macos_desktop::run(context, runtime)?;
+
+    drop(instance_guard);
+
+    if launch_installed {
+        crate::platform::Installation::launch_current_installation()?;
+    }
+
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -85,7 +93,7 @@ pub fn show_fatal_error(message: &str) {
 
 #[cfg(target_os = "macos")]
 pub fn show_fatal_error(message: &str) {
-    macos_shell::show_fatal_error(message);
+    macos_desktop::show_fatal_error(message);
 }
 
 #[cfg(target_os = "linux")]
