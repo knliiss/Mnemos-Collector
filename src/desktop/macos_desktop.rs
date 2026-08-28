@@ -1,7 +1,7 @@
 use std::process::Command;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -14,11 +14,11 @@ use zeroize::Zeroizing;
 use crate::application::CollectorApplication;
 use crate::diagnostics::{self, RuntimeSnapshot};
 use crate::platform::{Autostart, Installation};
-use crate::provisioning::{default_device_name, ProvisioningClient};
+use crate::provisioning::{ProvisioningClient, default_device_name};
 use crate::security::CredentialStore;
 
-use super::macos_native::{self, MacStatusItem};
 use super::DesktopLaunchContext;
+use super::macos_native::{self, MacStatusItem};
 
 const WINDOW_WIDTH: f32 = 1080.0;
 const WINDOW_HEIGHT: f32 = 720.0;
@@ -78,11 +78,7 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<bool> {
         Box::new(move |creation_context| {
             configure_style(&creation_context.egui_ctx);
 
-            Ok(Box::new(MacDesktop::new(
-                context,
-                runtime,
-                launch_signal,
-            )))
+            Ok(Box::new(MacDesktop::new(context, runtime, launch_signal)))
         }),
     )
     .map_err(|error| anyhow::anyhow!(error.to_string()))?;
@@ -294,20 +290,8 @@ impl MacDesktop {
 
         draw_card(ui.painter(), icon, SURFACE, LINE, 18.0);
         draw_mascot(ui.painter(), icon.shrink(2.0));
-        draw_text(
-            ui.painter(),
-            Pos2::new(78.0, 14.0),
-            "MNEMOS",
-            13.0,
-            ACCENT,
-        );
-        draw_text(
-            ui.painter(),
-            Pos2::new(78.0, 34.0),
-            "Collector",
-            21.0,
-            TEXT,
-        );
+        draw_text(ui.painter(), Pos2::new(78.0, 14.0), "MNEMOS", 13.0, ACCENT);
+        draw_text(ui.painter(), Pos2::new(78.0, 34.0), "Collector", 21.0, TEXT);
 
         let minimize = ui.interact(
             layout.window_minimize,
@@ -490,11 +474,7 @@ impl MacDesktop {
             TEXT,
         );
 
-        let copy = ui.interact(
-            layout.copy_logs,
-            Id::new("macos-copy-logs"),
-            Sense::click(),
-        );
+        let copy = ui.interact(layout.copy_logs, Id::new("macos-copy-logs"), Sense::click());
         draw_secondary_button(
             ui.painter(),
             layout.copy_logs,
@@ -534,8 +514,7 @@ impl MacDesktop {
             let scroll_delta = ui.input(|input| input.raw_scroll_delta.y);
 
             if scroll_delta > 0.0 {
-                self.log_scroll_from_bottom =
-                    (self.log_scroll_from_bottom + 3).min(max_scroll);
+                self.log_scroll_from_bottom = (self.log_scroll_from_bottom + 3).min(max_scroll);
             } else if scroll_delta < 0.0 {
                 self.log_scroll_from_bottom = self.log_scroll_from_bottom.saturating_sub(3);
             }
@@ -726,13 +705,7 @@ fn draw_card(painter: &egui::Painter, rect: Rect, fill: Color32, border: Color32
     painter.rect_filled(rect.shrink(1.0), (radius - 1.0).max(0.0), fill);
 }
 
-fn draw_text(
-    painter: &egui::Painter,
-    position: Pos2,
-    text: &str,
-    size: f32,
-    color: Color32,
-) {
+fn draw_text(painter: &egui::Painter, position: Pos2, text: &str, size: f32, color: Color32) {
     painter.text(
         position,
         Align2::LEFT_TOP,
@@ -1238,11 +1211,7 @@ fn status_copy(runtime: &RuntimeSnapshot) -> (&'static str, &'static str, Color3
         );
     }
 
-    (
-        "Cristalix активен",
-        "Ожидаем переход в Master Sword.",
-        TEXT,
-    )
+    ("Cristalix активен", "Ожидаем переход в Master Sword.", TEXT)
 }
 
 fn game_mode_label(mode: &str) -> &str {
