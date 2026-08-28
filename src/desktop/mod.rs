@@ -8,6 +8,8 @@ mod dpi;
 #[cfg(target_os = "macos")]
 mod macos_desktop;
 #[cfg(target_os = "macos")]
+mod macos_mascot;
+#[cfg(target_os = "macos")]
 mod macos_native;
 #[cfg(target_os = "windows")]
 mod mascot;
