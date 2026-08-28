@@ -1,32 +1,43 @@
+use std::path::Path;
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, Align, Color32, RichText, Sense, Stroke};
 use tokio::runtime::Handle;
 use zeroize::Zeroizing;
 
 use crate::application::CollectorApplication;
+#[cfg(target_os = "macos")]
+use crate::cristalix::set_configured_latest_log_path;
+use crate::cristalix::{clear_configured_latest_log_path, configured_latest_log_path};
 use crate::diagnostics::{self, RuntimeSnapshot};
 use crate::platform::{Autostart, Installation};
 use crate::provisioning::{ProvisioningClient, default_device_name};
 use crate::security::CredentialStore;
 
 use super::DesktopLaunchContext;
+#[cfg(target_os = "macos")]
+use super::macos_native::{self, MacStatusItem};
 
 const WINDOW_WIDTH: f32 = 1080.0;
 const WINDOW_HEIGHT: f32 = 720.0;
 const REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 
-const BACKGROUND: Color32 = Color32::from_rgb(12, 16, 18);
-const SURFACE: Color32 = Color32::from_rgb(22, 28, 31);
-const SURFACE_RAISED: Color32 = Color32::from_rgb(29, 36, 40);
-const TEXT: Color32 = Color32::from_rgb(238, 244, 241);
-const TEXT_MUTED: Color32 = Color32::from_rgb(151, 164, 158);
-const ACCENT: Color32 = Color32::from_rgb(125, 235, 157);
-const WARNING: Color32 = Color32::from_rgb(245, 190, 87);
-const DANGER: Color32 = Color32::from_rgb(242, 113, 113);
+const BACKGROUND: Color32 = Color32::from_rgb(0x02, 0x03, 0x02);
+const LOG_SURFACE: Color32 = Color32::from_rgb(0x0b, 0x0c, 0x09);
+const SURFACE: Color32 = Color32::from_rgb(0x15, 0x16, 0x12);
+const SURFACE_RAISED: Color32 = Color32::from_rgb(0x1f, 0x20, 0x1a);
+const ACCENT_DIM: Color32 = Color32::from_rgb(0x26, 0x31, 0x0d);
+const LINE: Color32 = Color32::from_rgb(0x35, 0x38, 0x31);
+const TEXT: Color32 = Color32::from_rgb(0xf5, 0xf6, 0xef);
+const TEXT_SECONDARY: Color32 = Color32::from_rgb(0xc2, 0xc4, 0xb8);
+const TEXT_MUTED: Color32 = Color32::from_rgb(0x7c, 0x80, 0x72);
+const ACCENT: Color32 = Color32::from_rgb(0xcb, 0xff, 0x2d);
+const POSITIVE: Color32 = Color32::from_rgb(0xbd, 0xe0, 0x6d);
+const WARNING: Color32 = Color32::from_rgb(0xff, 0xb3, 0x4f);
+const DANGER: Color32 = Color32::from_rgb(0xff, 0x68, 0x73);
 
 pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
     let viewport = egui::ViewportBuilder::default()
@@ -115,26 +126,46 @@ struct PortableDesktop {
     provisioned: bool,
     worker_started: bool,
     provisioning: bool,
+    exit_requested: bool,
     activation_token: String,
     device_name: String,
     activation_error: Option<String>,
     activation_receiver: Option<Receiver<Result<ActivationOutcome, String>>>,
+    log_source_error: Option<String>,
     selected_log_entry: Option<String>,
+    #[cfg(target_os = "macos")]
+    _status_item: Option<MacStatusItem>,
 }
 
 impl PortableDesktop {
     fn new(context: DesktopLaunchContext, runtime: Handle) -> Self {
+        #[cfg(target_os = "macos")]
+        let status_item = match MacStatusItem::install() {
+            Ok(status_item) => Some(status_item),
+            Err(error) => {
+                diagnostics::warn(
+                    "desktop",
+                    format!("macOS status bar item could not be created: {error:#}"),
+                );
+                None
+            }
+        };
+
         let mut desktop = Self {
             runtime,
             current_installation: context.current_installation,
             provisioned: context.access_key.is_some(),
             worker_started: false,
             provisioning: false,
+            exit_requested: false,
             activation_token: String::new(),
             device_name: default_device_name(),
             activation_error: None,
             activation_receiver: None,
+            log_source_error: None,
             selected_log_entry: None,
+            #[cfg(target_os = "macos")]
+            _status_item: status_item,
         };
 
         if let Some(access_key) = context.access_key {
@@ -226,11 +257,24 @@ impl PortableDesktop {
                     "provisioning",
                     "Activation handed off to the stable Collector installation",
                 );
+                self.exit_requested = true;
                 context.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             Err(message) => {
                 diagnostics::error("provisioning", message.clone());
                 self.activation_error = Some(message);
+            }
+        }
+    }
+
+    fn handle_window_close(&self, _context: &egui::Context) {
+        #[cfg(target_os = "macos")]
+        {
+            let close_requested = _context.input(|input| input.viewport().close_requested());
+
+            if close_requested && !self.exit_requested {
+                _context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                macos_native::hide_application();
             }
         }
     }
@@ -242,164 +286,330 @@ impl PortableDesktop {
         }
     }
 
-    fn draw_header(&self, ui: &mut egui::Ui, runtime: &RuntimeSnapshot) {
+    fn draw_header(&self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            egui::Frame::new()
+                .fill(SURFACE)
+                .stroke(Stroke::new(1.0_f32, LINE))
+                .corner_radius(18)
+                .inner_margin(2)
+                .show(ui, |ui| {
+                    draw_mascot(ui, 40.0);
+                });
+
+            ui.add_space(8.0);
+
             ui.vertical(|ui| {
-                ui.label(RichText::new("MNEMOS").size(12.0).color(ACCENT).strong());
-                ui.label(RichText::new("Collector").size(28.0).color(TEXT).strong());
+                ui.label(RichText::new("MNEMOS").size(11.0).color(ACCENT).strong());
+                ui.label(RichText::new("Collector").size(22.0).color(TEXT).strong());
+            });
+
+            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                 ui.label(
-                    RichText::new("Cristalix Master Sword telemetry")
-                        .size(13.0)
+                    RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                        .size(12.0)
                         .color(TEXT_MUTED),
                 );
             });
-
-            ui.add_space(28.0);
-            status_card(
-                ui,
-                "ИГРА",
-                if runtime.cristalix_running {
-                    "Cristalix"
-                } else {
-                    "Не запущена"
-                },
-                runtime.cristalix_running,
-            );
-            status_card(
-                ui,
-                "РЕЖИМ",
-                if runtime.game_mode.eq_ignore_ascii_case("unknown") {
-                    "—"
-                } else {
-                    runtime.game_mode.as_str()
-                },
-                runtime.game_mode.eq_ignore_ascii_case("master sword"),
-            );
-            status_card(
-                ui,
-                "MNEMOS",
-                if runtime.observing {
-                    "Подключён"
-                } else if runtime.realtime_connected {
-                    "Подключение"
-                } else {
-                    "Отключён"
-                },
-                runtime.observing,
-            );
         });
     }
 
-    fn draw_activation(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(18.0);
-        ui.group(|ui| {
-            ui.set_min_width(ui.available_width());
-            ui.heading("Активация Collector");
-            ui.label(
-                RichText::new(if self.current_installation {
-                    "Введите одноразовый код из Mnemos. Credential будет сохранён в системном хранилище."
-                } else {
-                    "Введите одноразовый код из Mnemos. Collector установит себя в стабильное пользовательское расположение и запустится оттуда."
-                })
-                .color(TEXT_MUTED),
-            );
-            ui.add_space(10.0);
+    fn draw_hero(&self, ui: &mut egui::Ui, runtime: &RuntimeSnapshot) {
+        let (title, detail, status_color) = status_copy(self.provisioned, runtime);
+        let response = card_frame(24).show(ui, |ui| {
+            ui.set_min_height(122.0);
 
-            ui.add_enabled_ui(!self.provisioning, |ui| {
-                ui.label(RichText::new("Код активации").color(TEXT_MUTED));
-                ui.add_sized(
-                    [ui.available_width(), 36.0],
-                    egui::TextEdit::singleline(&mut self.activation_token)
-                        .password(true)
-                        .hint_text("Одноразовый код"),
-                );
-                ui.add_space(8.0);
-                ui.label(RichText::new("Устройство").color(TEXT_MUTED));
-                ui.add_sized(
-                    [ui.available_width(), 36.0],
-                    egui::TextEdit::singleline(&mut self.device_name),
-                );
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("СТАТУС").size(11.0).color(ACCENT).strong());
+                    ui.label(RichText::new(title).size(27.0).color(status_color).strong());
+                    ui.label(RichText::new(detail).size(13.0).color(TEXT_SECONDARY));
+                });
+
+                ui.with_layout(egui::Layout::right_to_left(Align::TOP), |ui| {
+                    draw_mascot(ui, 48.0);
+                });
             });
 
             ui.add_space(12.0);
 
-            let button_text = if self.provisioning {
-                "Активация…"
-            } else {
-                "Активировать"
-            };
-            let activated = ui
-                .add_enabled(
-                    !self.provisioning,
-                    egui::Button::new(RichText::new(button_text).strong())
-                        .min_size(egui::vec2(160.0, 36.0)),
-                )
-                .clicked();
+            ui.columns(3, |columns| {
+                status_tile(
+                    &mut columns[0],
+                    "ИГРА",
+                    if runtime.cristalix_running {
+                        "Cristalix"
+                    } else {
+                        "Ожидание"
+                    },
+                    if runtime.cristalix_running {
+                        POSITIVE
+                    } else {
+                        TEXT_MUTED
+                    },
+                );
+                status_tile(
+                    &mut columns[1],
+                    "РЕЖИМ",
+                    game_mode_label(runtime.game_mode.as_str()),
+                    if is_master_sword(runtime.game_mode.as_str()) {
+                        ACCENT
+                    } else {
+                        WARNING
+                    },
+                );
+                status_tile(
+                    &mut columns[2],
+                    "MNEMOS",
+                    if runtime.realtime_connected {
+                        "Подключён"
+                    } else {
+                        "Нет связи"
+                    },
+                    if runtime.realtime_connected {
+                        POSITIVE
+                    } else {
+                        DANGER
+                    },
+                );
+            });
+        });
 
-            if activated {
-                self.begin_activation();
+        let rect = response.response.rect;
+        let accent_rect = egui::Rect::from_min_max(
+            egui::pos2(rect.left(), rect.top() + 22.0),
+            egui::pos2(rect.left() + 4.0, rect.bottom() - 22.0),
+        );
+        ui.painter().rect_filled(accent_rect, 2.0, status_color);
+    }
+
+    fn draw_activation(&mut self, ui: &mut egui::Ui) {
+        card_frame(24).show(ui, |ui| {
+            ui.label(
+                RichText::new(if self.current_installation {
+                    "Подключить Collector"
+                } else {
+                    "Установить Collector"
+                })
+                .size(19.0)
+                .color(TEXT)
+                .strong(),
+            );
+            ui.label(
+                RichText::new("Введите одноразовый код из Mnemos.")
+                    .size(13.0)
+                    .color(TEXT_SECONDARY),
+            );
+            ui.add_space(8.0);
+
+            ui.add_enabled_ui(!self.provisioning, |ui| {
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("Код").size(11.0).color(TEXT_MUTED));
+                        ui.add_sized(
+                            [480.0, 34.0],
+                            egui::TextEdit::singleline(&mut self.activation_token)
+                                .password(true)
+                                .hint_text("Одноразовый код"),
+                        );
+                    });
+
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("Устройство").size(11.0).color(TEXT_MUTED));
+                        ui.add_sized(
+                            [205.0, 34.0],
+                            egui::TextEdit::singleline(&mut self.device_name),
+                        );
+                    });
+
+                    ui.vertical(|ui| {
+                        ui.add_space(19.0);
+                        let button_text = if self.provisioning {
+                            "Активация…"
+                        } else {
+                            "Активировать"
+                        };
+                        let activate = ui
+                            .add(
+                                egui::Button::new(RichText::new(button_text).strong())
+                                    .min_size(egui::vec2(150.0, 34.0)),
+                            )
+                            .clicked();
+
+                        if activate {
+                            self.begin_activation();
+                        }
+                    });
+                });
+            });
+
+            if self.provisioning {
+                ui.add_space(6.0);
+                ui.label(RichText::new("Проверяем код и сохраняем credential…").color(TEXT_MUTED));
             }
 
             if let Some(error) = self.activation_error.as_deref() {
-                ui.add_space(8.0);
+                ui.add_space(6.0);
                 ui.colored_label(DANGER, error);
             }
         });
     }
 
-    fn draw_journal(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
-        ui.add_space(18.0);
-        ui.horizontal(|ui| {
-            ui.heading("Журнал Collector");
-            ui.add_space(10.0);
+    fn draw_log_source(&mut self, ui: &mut egui::Ui, runtime: &RuntimeSnapshot) {
+        let configured_path = configured_latest_log_path();
+        let active_path = runtime.log_path.as_deref();
+        let source_text = if let Some(path) = configured_path.as_deref() {
+            format!("Ручной источник: {}", shortened_path(path))
+        } else if let Some(path) = active_path {
+            format!("Авто: {}", shortened_path(path))
+        } else {
+            "Автопоиск: лог пока не найден".to_owned()
+        };
 
-            if ui.button("Копировать всё").clicked() {
-                context.copy_text(diagnostics::recent_text());
-                diagnostics::info("desktop", "Journal copied to clipboard as text");
-            }
+        card_frame(18).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("ЛОГ CRISTALIX").size(10.0).color(ACCENT).strong());
+                    ui.label(RichText::new(source_text).size(12.0).color(TEXT_SECONDARY));
+                });
 
-            let diagnostics_label = if diagnostics::debug_enabled() {
-                "Диагностика: вкл"
-            } else {
-                "Диагностика: выкл"
-            };
-
-            if ui.button(diagnostics_label).clicked() {
-                diagnostics::set_debug_enabled(!diagnostics::debug_enabled());
-            }
-        });
-
-        let log_text = diagnostics::recent_text();
-
-        if let Some(selected) = self.selected_log_entry.as_ref()
-            && !log_text.lines().any(|line| line == selected)
-        {
-            self.selected_log_entry = None;
-        }
-
-        ui.group(|ui| {
-            ui.set_min_height(if self.provisioned { 430.0 } else { 245.0 });
-            ui.set_min_width(ui.available_width());
-
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    if log_text.is_empty() {
-                        ui.label(RichText::new("Журнал пока пуст.").color(TEXT_MUTED));
-                    }
-
-                    for line in log_text.lines() {
-                        let selected = self.selected_log_entry.as_deref() == Some(line);
-                        let text = RichText::new(line).monospace().color(log_line_color(line));
-                        let response = ui.selectable_label(selected, text);
-
-                        if response.clicked() {
-                            self.selected_log_entry = Some(line.to_owned());
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    if configured_path.is_some() && ui.button("Автопоиск").clicked() {
+                        match clear_configured_latest_log_path() {
+                            Ok(()) => {
+                                self.log_source_error = None;
+                                diagnostics::info(
+                                    "cristalix",
+                                    "Manual Cristalix log source cleared; automatic discovery enabled",
+                                );
+                            }
+                            Err(error) => {
+                                self.log_source_error = Some(format!(
+                                    "Не удалось вернуть автопоиск: {error}"
+                                ));
+                            }
                         }
                     }
+
+                    #[cfg(target_os = "macos")]
+                    if ui.button("Выбрать файл…").clicked() {
+                        self.select_macos_log_file();
+                    }
                 });
+            });
+
+            if let Some(error) = self.log_source_error.as_deref() {
+                ui.add_space(4.0);
+                ui.colored_label(DANGER, error);
+            }
         });
+    }
+
+    #[cfg(target_os = "macos")]
+    fn select_macos_log_file(&mut self) {
+        match macos_native::pick_log_file() {
+            Ok(Some(path)) => match set_configured_latest_log_path(&path) {
+                Ok(()) => {
+                    self.log_source_error = None;
+                    diagnostics::info(
+                        "cristalix",
+                        format!("Manual Cristalix log source selected: {}", path.display()),
+                    );
+                }
+                Err(error) => {
+                    self.log_source_error =
+                        Some(format!("Не удалось сохранить выбранный лог: {error}"));
+                }
+            },
+            Ok(None) => {}
+            Err(error) => {
+                self.log_source_error = Some(format!("Не удалось открыть выбор файла: {error:#}"));
+            }
+        }
+    }
+
+    fn draw_journal(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
+        let desired_height = ui.available_height().max(180.0);
+
+        egui::Frame::new()
+            .fill(SURFACE)
+            .stroke(Stroke::new(1.0_f32, LINE))
+            .corner_radius(24)
+            .inner_margin(14)
+            .show(ui, |ui| {
+                ui.set_min_height((desired_height - 30.0).max(150.0));
+
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("ЖУРНАЛ COLLECTOR")
+                            .size(11.0)
+                            .color(ACCENT)
+                            .strong(),
+                    );
+
+                    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                        let diagnostics_label = if diagnostics::debug_enabled() {
+                            "Диагностика: вкл"
+                        } else {
+                            "Диагностика: выкл"
+                        };
+
+                        if ui.button(diagnostics_label).clicked() {
+                            diagnostics::set_debug_enabled(!diagnostics::debug_enabled());
+                        }
+
+                        if ui.button("Копировать всё").clicked() {
+                            context.copy_text(diagnostics::recent_text());
+                            diagnostics::info("desktop", "Journal copied to clipboard as text");
+                        }
+                    });
+                });
+
+                ui.add_space(7.0);
+
+                let log_text = diagnostics::recent_text();
+
+                if let Some(selected) = self.selected_log_entry.as_ref()
+                    && !log_text.lines().any(|line| line == selected)
+                {
+                    self.selected_log_entry = None;
+                }
+
+                egui::Frame::new()
+                    .fill(LOG_SURFACE)
+                    .stroke(Stroke::new(1.0_f32, LINE))
+                    .corner_radius(18)
+                    .inner_margin(10)
+                    .show(ui, |ui| {
+                        ui.set_min_height((ui.available_height() - 2.0).max(120.0));
+
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .stick_to_bottom(true)
+                            .show(ui, |ui| {
+                                if log_text.is_empty() {
+                                    ui.label(
+                                        RichText::new("Журнал пока пуст.")
+                                            .size(12.0)
+                                            .color(TEXT_MUTED),
+                                    );
+                                }
+
+                                for line in log_text.lines() {
+                                    let selected = self.selected_log_entry.as_deref() == Some(line);
+                                    let text = RichText::new(line)
+                                        .monospace()
+                                        .size(11.5)
+                                        .color(log_line_color(line));
+                                    let response = ui.selectable_label(selected, text);
+
+                                    if response.clicked() {
+                                        self.selected_log_entry = Some(line.to_owned());
+                                    }
+                                }
+                            });
+                    });
+            });
 
         let copy_pressed =
             context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::C));
@@ -413,25 +623,33 @@ impl PortableDesktop {
 impl eframe::App for PortableDesktop {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_activation(context);
+        self.handle_window_close(context);
         context.request_repaint_after(REFRESH_INTERVAL);
 
         let runtime = diagnostics::runtime_snapshot();
 
-        egui::CentralPanel::default().show(context, |ui| {
-            ui.visuals_mut().panel_fill = BACKGROUND;
-            self.draw_header(ui, &runtime);
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(22))
+            .show(context, |ui| {
+                self.draw_header(ui);
+                ui.add_space(12.0);
+                self.draw_hero(ui, &runtime);
+                ui.add_space(16.0);
 
-            if !self.provisioned {
-                self.draw_activation(ui);
-            }
+                if !self.provisioned {
+                    self.draw_activation(ui);
+                    ui.add_space(16.0);
+                }
 
-            self.draw_journal(ui, context);
+                self.draw_log_source(ui, &runtime);
+                ui.add_space(16.0);
+                self.draw_journal(ui, context);
 
-            if let Some(error) = runtime.last_error.as_deref() {
-                ui.add_space(8.0);
-                ui.colored_label(DANGER, error);
-            }
-        });
+                if let Some(error) = runtime.last_error.as_deref() {
+                    ui.add_space(6.0);
+                    ui.colored_label(DANGER, error);
+                }
+            });
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -444,34 +662,138 @@ fn configure_style(context: &egui::Context) {
 
     visuals.panel_fill = BACKGROUND;
     visuals.window_fill = SURFACE;
-    visuals.extreme_bg_color = SURFACE_RAISED;
+    visuals.extreme_bg_color = LOG_SURFACE;
     visuals.faint_bg_color = SURFACE;
+    visuals.widgets.noninteractive.bg_fill = SURFACE;
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, LINE);
     visuals.widgets.inactive.bg_fill = SURFACE_RAISED;
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(39, 51, 45);
-    visuals.widgets.active.bg_fill = Color32::from_rgb(47, 66, 54);
-    visuals.selection.bg_fill = Color32::from_rgb(55, 104, 70);
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, LINE);
+    visuals.widgets.hovered.bg_fill = ACCENT_DIM;
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, ACCENT);
+    visuals.widgets.active.bg_fill = ACCENT_DIM;
+    visuals.selection.bg_fill = ACCENT_DIM;
     visuals.selection.stroke.color = ACCENT;
     visuals.override_text_color = Some(TEXT);
+    visuals.window_corner_radius = 18.into();
 
     context.set_visuals(visuals);
     context.style_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+        style.spacing.item_spacing = egui::vec2(10.0, 7.0);
         style.spacing.button_padding = egui::vec2(12.0, 7.0);
+        style.spacing.interact_size.y = 32.0;
     });
 }
 
-fn status_card(ui: &mut egui::Ui, label: &str, value: &str, healthy: bool) {
-    ui.group(|ui| {
-        ui.set_min_width(210.0);
-        ui.set_min_height(66.0);
-        ui.label(RichText::new(label).size(11.0).color(TEXT_MUTED).strong());
-        ui.label(
-            RichText::new(value)
-                .size(17.0)
-                .color(if healthy { ACCENT } else { WARNING })
-                .strong(),
+fn card_frame(radius: u8) -> egui::Frame {
+    egui::Frame::new()
+        .fill(SURFACE)
+        .stroke(Stroke::new(1.0_f32, LINE))
+        .corner_radius(radius)
+        .inner_margin(16)
+}
+
+fn status_tile(ui: &mut egui::Ui, label: &str, value: &str, color: Color32) {
+    egui::Frame::new()
+        .fill(SURFACE_RAISED)
+        .stroke(Stroke::new(1.0_f32, LINE))
+        .corner_radius(18)
+        .inner_margin(10)
+        .show(ui, |ui| {
+            ui.set_min_height(46.0);
+            ui.label(RichText::new(label).size(10.0).color(TEXT_MUTED).strong());
+            ui.horizontal(|ui| {
+                let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
+                ui.painter().circle_filled(dot_rect.center(), 4.0, color);
+                ui.label(RichText::new(value).size(13.0).color(TEXT).strong());
+            });
+        });
+}
+
+fn status_copy(
+    provisioned: bool,
+    runtime: &RuntimeSnapshot,
+) -> (&'static str, &'static str, Color32) {
+    if !provisioned {
+        return (
+            "Требуется активация",
+            "Введите одноразовый код из Mnemos, чтобы подключить этот Collector.",
+            WARNING,
         );
-    });
+    }
+
+    if runtime.observing {
+        return (
+            "Сбор активен",
+            "Master Sword распознан. Новые события отправляются в Mnemos.",
+            ACCENT,
+        );
+    }
+
+    if is_master_sword(runtime.game_mode.as_str()) && !runtime.cristalix_running {
+        return (
+            "Master Sword найден",
+            "Ждём свежую активность в логе, чтобы подтвердить текущую сессию.",
+            WARNING,
+        );
+    }
+
+    if !runtime.cristalix_running {
+        return (
+            "Ожидаем Cristalix",
+            "Collector готов и сам подхватит игру после появления свежего лога.",
+            TEXT,
+        );
+    }
+
+    if is_master_sword(runtime.game_mode.as_str()) && !runtime.realtime_connected {
+        return (
+            "Подключаем Mnemos",
+            "Master Sword активен. Восстанавливаем соединение.",
+            WARNING,
+        );
+    }
+
+    if is_master_sword(runtime.game_mode.as_str()) {
+        return (
+            "Подтверждаем сбор",
+            "Сессия активна. Завершаем подключение Collector.",
+            WARNING,
+        );
+    }
+
+    ("Cristalix активен", "Ожидаем переход в Master Sword.", TEXT)
+}
+
+fn game_mode_label(mode: &str) -> &str {
+    if is_master_sword(mode) {
+        "Master Sword"
+    } else if mode.eq_ignore_ascii_case("unknown") || mode.trim().is_empty() {
+        "Не определён"
+    } else {
+        mode
+    }
+}
+
+fn is_master_sword(mode: &str) -> bool {
+    mode.eq_ignore_ascii_case("MasterSword") || mode.eq_ignore_ascii_case("Master Sword")
+}
+
+fn shortened_path(path: &Path) -> String {
+    const MAX_CHARS: usize = 92;
+
+    let value = path.to_string_lossy();
+    let count = value.chars().count();
+
+    if count <= MAX_CHARS {
+        return value.into_owned();
+    }
+
+    let suffix = value
+        .chars()
+        .skip(count.saturating_sub(MAX_CHARS - 1))
+        .collect::<String>();
+
+    format!("…{suffix}")
 }
 
 fn log_line_color(line: &str) -> Color32 {
@@ -484,6 +806,56 @@ fn log_line_color(line: &str) -> Color32 {
     } else {
         TEXT
     }
+}
+
+fn draw_mascot(ui: &mut egui::Ui, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), Sense::hover());
+    let painter = ui.painter();
+    let center = rect.center() + egui::vec2(0.0, size * 0.05);
+    let head_radius = size * 0.31;
+    let ear_width = size * 0.19;
+    let ear_top = rect.top() + size * 0.08;
+    let ear_base = center.y - head_radius * 0.58;
+    let transparent_stroke = Stroke::new(0.0_f32, Color32::TRANSPARENT);
+
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(center.x - head_radius * 0.78, ear_base),
+            egui::pos2(center.x - head_radius * 0.78 - ear_width, ear_top),
+            egui::pos2(center.x - head_radius * 0.18, ear_base - size * 0.03),
+        ],
+        ACCENT,
+        transparent_stroke,
+    ));
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(center.x + head_radius * 0.78, ear_base),
+            egui::pos2(center.x + head_radius * 0.78 + ear_width, ear_top),
+            egui::pos2(center.x + head_radius * 0.18, ear_base - size * 0.03),
+        ],
+        ACCENT,
+        transparent_stroke,
+    ));
+    painter.circle_filled(center, head_radius, ACCENT);
+    painter.circle_filled(
+        center + egui::vec2(-head_radius * 0.36, -head_radius * 0.08),
+        size * 0.035,
+        BACKGROUND,
+    );
+    painter.circle_filled(
+        center + egui::vec2(head_radius * 0.36, -head_radius * 0.08),
+        size * 0.035,
+        BACKGROUND,
+    );
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            center + egui::vec2(-size * 0.04, size * 0.05),
+            center + egui::vec2(size * 0.04, size * 0.05),
+            center + egui::vec2(0.0, size * 0.11),
+        ],
+        BACKGROUND,
+        transparent_stroke,
+    ));
 }
 
 fn portable_icon() -> egui::IconData {
@@ -500,9 +872,9 @@ fn portable_icon() -> egui::IconData {
             let inside_right_ear = y < 11 && x > 17 && x < 27 && y + 3 > x / 2 - 5;
             let accent = inside_head || inside_left_ear || inside_right_ear;
             let color = if accent {
-                [125, 235, 157, 255]
+                [0xcb, 0xff, 0x2d, 255]
             } else {
-                [12, 16, 18, 255]
+                [0x02, 0x03, 0x02, 255]
             };
 
             rgba[index..index + 4].copy_from_slice(&color);
@@ -582,5 +954,12 @@ mod tests {
         assert_eq!(log_line_color("[WARN ] delayed"), WARNING);
         assert_eq!(log_line_color("[DEBUG] detail"), TEXT_MUTED);
         assert_eq!(log_line_color("[INFO ] ready"), TEXT);
+    }
+
+    #[test]
+    fn master_sword_label_accepts_runtime_and_human_forms() {
+        assert!(is_master_sword("MasterSword"));
+        assert!(is_master_sword("Master Sword"));
+        assert!(!is_master_sword("Unknown"));
     }
 }

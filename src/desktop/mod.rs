@@ -5,6 +5,8 @@ mod base_view;
 mod clipboard;
 #[cfg(target_os = "windows")]
 mod dpi;
+#[cfg(target_os = "macos")]
+mod macos_native;
 #[cfg(target_os = "windows")]
 mod mascot;
 #[cfg(target_os = "windows")]

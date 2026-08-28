@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use sysinfo::{Pid, Process, ProcessesToUpdate, System};
 
 const MAX_PARENT_DEPTH: usize = 5;
+const CRISTALIX_LOG_SUFFIX: [&str; 4] = ["updates", "Minigames", "logs", "latest.log"];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CristalixProcessSnapshot {
@@ -150,12 +151,14 @@ fn process_locations(process: &Process) -> Vec<String> {
 }
 
 fn references_cristalix_game(value: &str) -> bool {
-    let normalized = value.replace('\\', "/").to_ascii_lowercase();
+    let Some(path) = extract_path_value(value) else {
+        return false;
+    };
+    let normalized = normalize_path_separators(path).to_ascii_lowercase();
 
-    normalized.contains("/.cristalix/")
-        && (normalized.contains("/updates/minigames/")
-            || normalized.contains("/updates/minigames")
-            || normalized.contains("minigames"))
+    cristalix_root_end(&normalized).is_some()
+        && normalized.contains("/updates/minigames")
+        && !normalized.contains("mnemos-collector")
 }
 
 fn collect_log_candidates(locations: &[String], candidates: &mut BTreeSet<PathBuf>) {
@@ -167,27 +170,75 @@ fn collect_log_candidates(locations: &[String], candidates: &mut BTreeSet<PathBu
 }
 
 fn latest_log_from_location(location: &str) -> Option<PathBuf> {
-    let normalized = location.replace('\\', "/");
+    let value = extract_path_value(location)?;
+    let normalized = normalize_path_separators(value);
     let lowercase = normalized.to_ascii_lowercase();
-    let cristalix_start = lowercase.find(".cristalix")?;
-    let cristalix_end = cristalix_start + ".cristalix".len();
-    let root_with_prefix = normalized.get(..cristalix_end)?;
-    let root = root_with_prefix
-        .rsplit_once('=')
-        .map_or(root_with_prefix, |(_, path)| path)
-        .trim_matches(['"', '\'', ' ']);
+    let root_end = cristalix_root_end(&lowercase)?;
+    let root = normalized.get(..root_end)?.trim();
 
     if root.is_empty() {
         return None;
     }
 
     Some(
-        PathBuf::from(root)
-            .join("updates")
-            .join("Minigames")
-            .join("logs")
-            .join("latest.log"),
+        CRISTALIX_LOG_SUFFIX
+            .iter()
+            .fold(PathBuf::from(root), |path, component| path.join(component)),
     )
+}
+
+fn normalize_path_separators(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut previous_separator = false;
+
+    for character in value.chars() {
+        let separator = character == '/' || character == '\\';
+
+        if separator {
+            if !previous_separator {
+                normalized.push('/');
+            }
+        } else {
+            normalized.push(character);
+        }
+
+        previous_separator = separator;
+    }
+
+    normalized
+}
+
+fn cristalix_root_end(normalized_lowercase: &str) -> Option<usize> {
+    ["/.cristalix/", "/cristalix/"]
+        .into_iter()
+        .filter_map(|marker| {
+            normalized_lowercase
+                .find(marker)
+                .map(|start| start + marker.len() - 1)
+        })
+        .min()
+        .or_else(|| {
+            ["/.cristalix", "/cristalix"]
+                .into_iter()
+                .find_map(|marker| {
+                    normalized_lowercase
+                        .strip_suffix(marker)
+                        .map(|prefix| prefix.len() + marker.len())
+                })
+        })
+}
+
+fn extract_path_value(location: &str) -> Option<&str> {
+    let value = location
+        .rsplit_once('=')
+        .map_or(location, |(_, value)| value)
+        .trim_matches(['"', '\'', ' ']);
+
+    if value.is_empty() || (!value.contains('/') && !value.contains('\\')) {
+        return None;
+    }
+
+    Some(value)
 }
 
 #[cfg(test)]
@@ -195,47 +246,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extracts_cristalix_root_from_windows_java_argument() {
+    fn extracts_log_from_windows_dot_cristalix_root() {
         let path = latest_log_from_location(
             r#"-Djava.library.path=C:\Users\Player\.cristalix\updates\Minigames\natives"#,
         )
         .unwrap();
         let normalized = path.to_string_lossy().replace('\\', "/");
 
-        assert!(
-            normalized.ends_with("C:/Users/Player/.cristalix/updates/Minigames/logs/latest.log")
+        assert_eq!(
+            normalized,
+            "C:/Users/Player/.cristalix/updates/Minigames/logs/latest.log"
         );
     }
 
     #[test]
-    fn extracts_cristalix_root_from_executable_path() {
+    fn extracts_log_from_macos_application_support_cristalix_root() {
         let path = latest_log_from_location(
-            r#"C:\Users\Player\.cristalix\updates\Minigames\runtime\bin\javaw.exe"#,
+            "/Users/player/Library/Application Support/cristalix/updates/Minigames/runtime/bin/java",
         )
         .unwrap();
-        let normalized = path.to_string_lossy().replace('\\', "/");
-
-        assert!(
-            normalized.ends_with("C:/Users/Player/.cristalix/updates/Minigames/logs/latest.log")
-        );
-    }
-
-    #[test]
-    fn extracts_cristalix_root_from_unix_argument() {
-        let path = latest_log_from_location("/home/player/.cristalix/updates/Minigames/client.jar")
-            .unwrap();
 
         assert_eq!(
             path,
-            PathBuf::from("/home/player/.cristalix/updates/Minigames/logs/latest.log")
+            PathBuf::from(
+                "/Users/player/Library/Application Support/cristalix/updates/Minigames/logs/latest.log"
+            )
         );
     }
 
     #[test]
-    fn recognizes_minigames_locations_case_insensitively() {
+    fn ignores_minigames_path_without_cristalix_root() {
+        assert!(
+            latest_log_from_location("/Volumes/Games/SomeOtherLauncher/Minigames/client.jar")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ignores_explicit_log_path_outside_cristalix_root() {
+        assert!(
+            latest_log_from_location(
+                "-Dcristalix.log=/Volumes/Games/Custom Logs/current-session.log"
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn recognizes_cristalix_game_locations_case_insensitively() {
         assert!(references_cristalix_game(
-            r#"C:\Users\Player\.cristalix\updates\MiniGames\runtime\bin\javaw.exe"#
+            r#"C:\Games\Cristalix\updates\MiniGames\runtime\bin\javaw.exe"#
         ));
+    }
+
+    #[test]
+    fn collapses_repeated_windows_separators_before_matching_layout() {
+        assert_eq!(
+            normalize_path_separators(r#"C:\\Games\\Cristalix\\updates\\Minigames"#),
+            "C:/Games/Cristalix/updates/Minigames"
+        );
     }
 
     #[test]
