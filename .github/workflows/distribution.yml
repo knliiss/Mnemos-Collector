@@ -202,3 +202,118 @@ jobs:
             dist/mnemos-collector-update-linux-x86_64
           if-no-files-found: error
           retention-days: 7
+
+  macos:
+    name: macos-${{ matrix.architecture }}-application
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: aarch64
+            target: aarch64-apple-darwin
+            runner: macos-15
+          - architecture: x86_64
+            target: x86_64-apple-darwin
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY: ${{ vars.MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install macOS packaging dependencies
+        shell: bash
+        run: brew install librsvg
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup target add ${{ matrix.target }} --toolchain 1.98.0
+
+      - name: Test macOS Collector
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY:-}" ]; then
+            echo "MNEMOS_COLLECTOR_UPDATE_PUBLIC_KEY repository variable is required."
+            exit 1
+          fi
+
+          cargo +1.98.0 test \
+            --locked \
+            --target ${{ matrix.target }}
+
+      - name: Build macOS Collector
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.98.0 build \
+            --locked \
+            --release \
+            --target ${{ matrix.target }}
+
+      - name: Package macOS application
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)"
+
+          if [ -z "$version" ]; then
+            echo "Cargo package version could not be resolved."
+            exit 1
+          fi
+
+          bash -n scripts/package-macos.sh
+          bash scripts/package-macos.sh \
+            target/${{ matrix.target }}/release/mnemos-collector \
+            "$version" \
+            ${{ matrix.architecture }} \
+            dist
+
+      - name: Verify macOS artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg="dist/Mnemos-Collector-macOS-${{ matrix.architecture }}.dmg"
+          update="dist/mnemos-collector-update-macos-${{ matrix.architecture }}"
+          mount_point="$RUNNER_TEMP/mnemos-collector-dmg"
+
+          test -s "$dmg"
+          test -x "$update"
+          codesign --verify --strict "$update"
+
+          mkdir -p "$mount_point"
+          hdiutil attach \
+            -readonly \
+            -nobrowse \
+            -mountpoint "$mount_point" \
+            "$dmg" \
+            >/dev/null
+
+          trap 'hdiutil detach "$mount_point" >/dev/null 2>&1 || true' EXIT
+
+          app="$mount_point/Mnemos Collector.app"
+          executable="$app/Contents/MacOS/mnemos-collector"
+
+          test -x "$executable"
+          codesign --verify --deep --strict "$app"
+
+          file "$executable" | grep -Fq '${{ matrix.architecture }}'
+
+          hdiutil detach "$mount_point" >/dev/null
+          trap - EXIT
+
+      - name: Upload macOS application
+        uses: actions/upload-artifact@v7
+        with:
+          name: distribution-macos-${{ matrix.architecture }}
+          path: |
+            dist/Mnemos-Collector-macOS-${{ matrix.architecture }}.dmg
+            dist/mnemos-collector-update-macos-${{ matrix.architecture }}
+          if-no-files-found: error
+          retention-days: 7
