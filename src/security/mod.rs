@@ -32,8 +32,8 @@ impl CredentialStore {
 
         #[cfg(target_os = "macos")]
         {
-            let access_key = macos::load(KEYRING_SERVICE, ACCESS_KEY_ACCOUNT)
-                .context("failed to read collector access key from macOS Keychain")?;
+            let access_key = macos::load(ACCESS_KEY_ACCOUNT)
+                .context("failed to read collector access key from macOS private storage")?;
 
             if let Some(access_key) = access_key.as_deref() {
                 validate_access_key(access_key)?;
@@ -73,8 +73,8 @@ impl CredentialStore {
 
         #[cfg(target_os = "macos")]
         {
-            macos::save(KEYRING_SERVICE, ACCESS_KEY_ACCOUNT, access_key)
-                .context("failed to save collector access key in macOS Keychain")
+            macos::save(ACCESS_KEY_ACCOUNT, access_key)
+                .context("failed to save collector access key in macOS private storage")
         }
 
         #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
@@ -103,8 +103,8 @@ impl PendingProvisioningStore {
         let encoded = windows::load(&credential_target(PENDING_PROVISIONING_ACCOUNT))?;
 
         #[cfg(target_os = "macos")]
-        let encoded = macos::load(KEYRING_SERVICE, PENDING_PROVISIONING_ACCOUNT)
-            .context("failed to read pending provisioning secret from macOS Keychain")?;
+        let encoded = macos::load(PENDING_PROVISIONING_ACCOUNT)
+            .context("failed to read pending provisioning secret from macOS private storage")?;
 
         #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         let encoded = {
@@ -158,8 +158,8 @@ impl PendingProvisioningStore {
 
         #[cfg(target_os = "macos")]
         {
-            macos::save(KEYRING_SERVICE, PENDING_PROVISIONING_ACCOUNT, &encoded)
-                .context("failed to save pending provisioning secret in macOS Keychain")
+            macos::save(PENDING_PROVISIONING_ACCOUNT, &encoded)
+                .context("failed to save pending provisioning secret in macOS private storage")
         }
 
         #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
@@ -180,8 +180,8 @@ impl PendingProvisioningStore {
 
         #[cfg(target_os = "macos")]
         {
-            macos::delete(KEYRING_SERVICE, PENDING_PROVISIONING_ACCOUNT)
-                .context("failed to clear pending provisioning secret from macOS Keychain")
+            macos::delete(PENDING_PROVISIONING_ACCOUNT)
+                .context("failed to clear pending provisioning secret from macOS private storage")
         }
 
         #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
