@@ -31,7 +31,10 @@ pub fn delete(account: &str) -> Result<()> {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error).with_context(|| {
-            format!("failed to delete macOS collector credential {}", path.display())
+            format!(
+                "failed to delete macOS collector credential {}",
+                path.display()
+            )
         }),
     }
 }
@@ -66,7 +69,10 @@ fn load_from_path(path: &Path) -> Result<Option<String>> {
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(error).with_context(|| {
-                format!("failed to inspect macOS collector credential {}", path.display())
+                format!(
+                    "failed to inspect macOS collector credential {}",
+                    path.display()
+                )
             });
         }
     };
@@ -85,9 +91,12 @@ fn load_from_path(path: &Path) -> Result<Option<String>> {
         )
     })?;
 
-    fs::read_to_string(path)
-        .map(Some)
-        .with_context(|| format!("failed to read macOS collector credential {}", path.display()))
+    fs::read_to_string(path).map(Some).with_context(|| {
+        format!(
+            "failed to read macOS collector credential {}",
+            path.display()
+        )
+    })
 }
 
 fn save_to_path(path: &Path, value: &str) -> Result<()> {
