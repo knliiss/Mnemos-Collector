@@ -21,22 +21,23 @@ use super::DesktopLaunchContext;
 #[cfg(target_os = "macos")]
 use super::macos_native::{self, MacStatusItem};
 
-const WINDOW_WIDTH: f32 = 980.0;
-const WINDOW_HEIGHT: f32 = 690.0;
+const WINDOW_WIDTH: f32 = 1080.0;
+const WINDOW_HEIGHT: f32 = 720.0;
 const REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 
-const BACKGROUND: Color32 = Color32::from_rgb(10, 14, 16);
-const SURFACE: Color32 = Color32::from_rgb(17, 23, 25);
-const SURFACE_RAISED: Color32 = Color32::from_rgb(24, 31, 34);
-const SURFACE_HOVER: Color32 = Color32::from_rgb(31, 42, 38);
-const LINE: Color32 = Color32::from_rgb(49, 61, 57);
-const TEXT: Color32 = Color32::from_rgb(238, 244, 241);
-const TEXT_SECONDARY: Color32 = Color32::from_rgb(186, 198, 192);
-const TEXT_MUTED: Color32 = Color32::from_rgb(137, 151, 145);
-const ACCENT: Color32 = Color32::from_rgb(125, 235, 157);
-const POSITIVE: Color32 = Color32::from_rgb(112, 221, 151);
-const WARNING: Color32 = Color32::from_rgb(245, 190, 87);
-const DANGER: Color32 = Color32::from_rgb(242, 113, 113);
+const BACKGROUND: Color32 = Color32::from_rgb(0x02, 0x03, 0x02);
+const LOG_SURFACE: Color32 = Color32::from_rgb(0x0b, 0x0c, 0x09);
+const SURFACE: Color32 = Color32::from_rgb(0x15, 0x16, 0x12);
+const SURFACE_RAISED: Color32 = Color32::from_rgb(0x1f, 0x20, 0x1a);
+const ACCENT_DIM: Color32 = Color32::from_rgb(0x26, 0x31, 0x0d);
+const LINE: Color32 = Color32::from_rgb(0x35, 0x38, 0x31);
+const TEXT: Color32 = Color32::from_rgb(0xf5, 0xf6, 0xef);
+const TEXT_SECONDARY: Color32 = Color32::from_rgb(0xc2, 0xc4, 0xb8);
+const TEXT_MUTED: Color32 = Color32::from_rgb(0x7c, 0x80, 0x72);
+const ACCENT: Color32 = Color32::from_rgb(0xcb, 0xff, 0x2d);
+const POSITIVE: Color32 = Color32::from_rgb(0xbd, 0xe0, 0x6d);
+const WARNING: Color32 = Color32::from_rgb(0xff, 0xb3, 0x4f);
+const DANGER: Color32 = Color32::from_rgb(0xff, 0x68, 0x73);
 
 pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
     let viewport = egui::ViewportBuilder::default()
@@ -287,7 +288,15 @@ impl PortableDesktop {
 
     fn draw_header(&self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            draw_mascot(ui, 42.0);
+            egui::Frame::new()
+                .fill(SURFACE)
+                .stroke(Stroke::new(1.0_f32, LINE))
+                .corner_radius(18)
+                .inner_margin(2)
+                .show(ui, |ui| {
+                    draw_mascot(ui, 40.0);
+                });
+
             ui.add_space(8.0);
 
             ui.vertical(|ui| {
@@ -307,8 +316,9 @@ impl PortableDesktop {
 
     fn draw_hero(&self, ui: &mut egui::Ui, runtime: &RuntimeSnapshot) {
         let (title, detail, status_color) = status_copy(self.provisioned, runtime);
+        let response = card_frame(24).show(ui, |ui| {
+            ui.set_min_height(122.0);
 
-        card_frame(18).show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
                     ui.label(RichText::new("СТАТУС").size(11.0).color(ACCENT).strong());
@@ -317,7 +327,7 @@ impl PortableDesktop {
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(Align::TOP), |ui| {
-                    draw_mascot(ui, 50.0);
+                    draw_mascot(ui, 48.0);
                 });
             });
 
@@ -351,14 +361,12 @@ impl PortableDesktop {
                 status_tile(
                     &mut columns[2],
                     "MNEMOS",
-                    if runtime.observing {
-                        "Передача активна"
-                    } else if runtime.realtime_connected {
+                    if runtime.realtime_connected {
                         "Подключён"
                     } else {
                         "Нет связи"
                     },
-                    if runtime.observing || runtime.realtime_connected {
+                    if runtime.realtime_connected {
                         POSITIVE
                     } else {
                         DANGER
@@ -366,13 +374,29 @@ impl PortableDesktop {
                 );
             });
         });
+
+        let rect = response.response.rect;
+        let accent_rect = egui::Rect::from_min_max(
+            egui::pos2(rect.left(), rect.top() + 22.0),
+            egui::pos2(rect.left() + 4.0, rect.bottom() - 22.0),
+        );
+        ui.painter().rect_filled(accent_rect, 2.0, status_color);
     }
 
     fn draw_activation(&mut self, ui: &mut egui::Ui) {
-        card_frame(16).show(ui, |ui| {
-            ui.label(RichText::new("АКТИВАЦИЯ").size(11.0).color(ACCENT).strong());
+        card_frame(24).show(ui, |ui| {
             ui.label(
-                RichText::new("Подключите Collector одноразовым кодом из Mnemos.")
+                RichText::new(if self.current_installation {
+                    "Подключить Collector"
+                } else {
+                    "Установить Collector"
+                })
+                .size(19.0)
+                .color(TEXT)
+                .strong(),
+            );
+            ui.label(
+                RichText::new("Введите одноразовый код из Mnemos.")
                     .size(13.0)
                     .color(TEXT_SECONDARY),
             );
@@ -383,7 +407,7 @@ impl PortableDesktop {
                     ui.vertical(|ui| {
                         ui.label(RichText::new("Код").size(11.0).color(TEXT_MUTED));
                         ui.add_sized(
-                            [430.0, 34.0],
+                            [480.0, 34.0],
                             egui::TextEdit::singleline(&mut self.activation_token)
                                 .password(true)
                                 .hint_text("Одноразовый код"),
@@ -393,7 +417,7 @@ impl PortableDesktop {
                     ui.vertical(|ui| {
                         ui.label(RichText::new("Устройство").size(11.0).color(TEXT_MUTED));
                         ui.add_sized(
-                            [240.0, 34.0],
+                            [205.0, 34.0],
                             egui::TextEdit::singleline(&mut self.device_name),
                         );
                     });
@@ -442,7 +466,7 @@ impl PortableDesktop {
             "Автопоиск: лог пока не найден".to_owned()
         };
 
-        card_frame(12).show(ui, |ui| {
+        card_frame(18).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(RichText::new("ЛОГ CRISTALIX").size(10.0).color(ACCENT).strong());
@@ -510,7 +534,7 @@ impl PortableDesktop {
         egui::Frame::new()
             .fill(SURFACE)
             .stroke(Stroke::new(1.0_f32, LINE))
-            .corner_radius(18)
+            .corner_radius(24)
             .inner_margin(14)
             .show(ui, |ui| {
                 ui.set_min_height((desired_height - 30.0).max(150.0));
@@ -552,9 +576,9 @@ impl PortableDesktop {
                 }
 
                 egui::Frame::new()
-                    .fill(BACKGROUND)
+                    .fill(LOG_SURFACE)
                     .stroke(Stroke::new(1.0_f32, LINE))
-                    .corner_radius(12)
+                    .corner_radius(18)
                     .inner_margin(10)
                     .show(ui, |ui| {
                         ui.set_min_height((ui.available_height() - 2.0).max(120.0));
@@ -605,20 +629,20 @@ impl eframe::App for PortableDesktop {
         let runtime = diagnostics::runtime_snapshot();
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(20))
+            .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(22))
             .show(context, |ui| {
                 self.draw_header(ui);
-                ui.add_space(10.0);
+                ui.add_space(12.0);
                 self.draw_hero(ui, &runtime);
-                ui.add_space(10.0);
+                ui.add_space(16.0);
 
                 if !self.provisioned {
                     self.draw_activation(ui);
-                    ui.add_space(10.0);
+                    ui.add_space(16.0);
                 }
 
                 self.draw_log_source(ui, &runtime);
-                ui.add_space(10.0);
+                ui.add_space(16.0);
                 self.draw_journal(ui, context);
 
                 if let Some(error) = runtime.last_error.as_deref() {
@@ -638,19 +662,19 @@ fn configure_style(context: &egui::Context) {
 
     visuals.panel_fill = BACKGROUND;
     visuals.window_fill = SURFACE;
-    visuals.extreme_bg_color = BACKGROUND;
+    visuals.extreme_bg_color = LOG_SURFACE;
     visuals.faint_bg_color = SURFACE;
     visuals.widgets.noninteractive.bg_fill = SURFACE;
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, LINE);
     visuals.widgets.inactive.bg_fill = SURFACE_RAISED;
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, LINE);
-    visuals.widgets.hovered.bg_fill = SURFACE_HOVER;
+    visuals.widgets.hovered.bg_fill = ACCENT_DIM;
     visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, ACCENT);
-    visuals.widgets.active.bg_fill = Color32::from_rgb(40, 58, 47);
-    visuals.selection.bg_fill = Color32::from_rgb(55, 104, 70);
+    visuals.widgets.active.bg_fill = ACCENT_DIM;
+    visuals.selection.bg_fill = ACCENT_DIM;
     visuals.selection.stroke.color = ACCENT;
     visuals.override_text_color = Some(TEXT);
-    visuals.window_corner_radius = 16.into();
+    visuals.window_corner_radius = 18.into();
 
     context.set_visuals(visuals);
     context.style_mut(|style| {
@@ -672,15 +696,15 @@ fn status_tile(ui: &mut egui::Ui, label: &str, value: &str, color: Color32) {
     egui::Frame::new()
         .fill(SURFACE_RAISED)
         .stroke(Stroke::new(1.0_f32, LINE))
-        .corner_radius(12)
+        .corner_radius(18)
         .inner_margin(10)
         .show(ui, |ui| {
-            ui.set_min_height(48.0);
+            ui.set_min_height(46.0);
             ui.label(RichText::new(label).size(10.0).color(TEXT_MUTED).strong());
             ui.horizontal(|ui| {
                 let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
                 ui.painter().circle_filled(dot_rect.center(), 4.0, color);
-                ui.label(RichText::new(value).size(13.0).color(color).strong());
+                ui.label(RichText::new(value).size(13.0).color(TEXT).strong());
             });
         });
 }
@@ -699,40 +723,48 @@ fn status_copy(
 
     if runtime.observing {
         return (
-            "Collector активен",
-            "Master Sword распознан, события передаются в Mnemos.",
-            POSITIVE,
+            "Сбор активен",
+            "Master Sword распознан. Новые события отправляются в Mnemos.",
+            ACCENT,
+        );
+    }
+
+    if is_master_sword(runtime.game_mode.as_str()) && !runtime.cristalix_running {
+        return (
+            "Master Sword найден",
+            "Ждём свежую активность в логе, чтобы подтвердить текущую сессию.",
+            WARNING,
         );
     }
 
     if !runtime.cristalix_running {
         return (
-            "Ожидание Cristalix",
-            "Collector работает в фоне и ждёт запуск игрового клиента.",
-            TEXT_SECONDARY,
+            "Ожидаем Cristalix",
+            "Collector готов и сам подхватит игру после появления свежего лога.",
+            TEXT,
         );
     }
 
-    if !is_master_sword(runtime.game_mode.as_str()) {
+    if is_master_sword(runtime.game_mode.as_str()) && !runtime.realtime_connected {
         return (
-            "Ожидание Master Sword",
-            "Cristalix найден, но текущий режим ещё не подтверждён как Master Sword.",
+            "Подключаем Mnemos",
+            "Master Sword активен. Восстанавливаем соединение.",
             WARNING,
         );
     }
 
-    if !runtime.realtime_connected {
+    if is_master_sword(runtime.game_mode.as_str()) {
         return (
-            "Подключение к Mnemos",
-            "Игровой лог найден. Восстанавливаем realtime-соединение.",
+            "Подтверждаем сбор",
+            "Сессия активна. Завершаем подключение Collector.",
             WARNING,
         );
     }
 
     (
-        "Подготовка наблюдения",
-        "Соединение установлено, Collector подтверждает текущую игровую сессию.",
-        ACCENT,
+        "Cristalix активен",
+        "Ожидаем переход в Master Sword.",
+        TEXT,
     )
 }
 
@@ -844,9 +876,9 @@ fn portable_icon() -> egui::IconData {
             let inside_right_ear = y < 11 && x > 17 && x < 27 && y + 3 > x / 2 - 5;
             let accent = inside_head || inside_left_ear || inside_right_ear;
             let color = if accent {
-                [125, 235, 157, 255]
+                [0xcb, 0xff, 0x2d, 255]
             } else {
-                [10, 14, 16, 255]
+                [0x02, 0x03, 0x02, 255]
             };
 
             rgba[index..index + 4].copy_from_slice(&color);
