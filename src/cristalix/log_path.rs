@@ -89,26 +89,26 @@ pub fn known_latest_log_paths() -> Vec<PathBuf> {
     known_latest_log_paths_for_home(user_dirs.home_dir())
 }
 
+#[cfg(target_os = "macos")]
 fn known_latest_log_paths_for_home(home: &Path) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-
-    #[cfg(target_os = "macos")]
-    {
-        paths.push(latest_log_in_cristalix_root(
+    vec![
+        latest_log_in_cristalix_root(
             home.join("Library")
                 .join("Application Support")
                 .join("cristalix"),
-        ));
-        paths.push(latest_log_in_cristalix_root(
+        ),
+        latest_log_in_cristalix_root(
             home.join("Library")
                 .join("Application Support")
                 .join(".cristalix"),
-        ));
-    }
+        ),
+        latest_log_in_cristalix_root(home.join(".cristalix")),
+    ]
+}
 
-    paths.push(latest_log_in_cristalix_root(home.join(".cristalix")));
-
-    paths
+#[cfg(not(target_os = "macos"))]
+fn known_latest_log_paths_for_home(home: &Path) -> Vec<PathBuf> {
+    vec![latest_log_in_cristalix_root(home.join(".cristalix"))]
 }
 
 fn latest_log_in_cristalix_root(root: PathBuf) -> PathBuf {
