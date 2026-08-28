@@ -1,12 +1,12 @@
 #[cfg(target_os = "windows")]
+#[path = "view.rs"]
+mod base_view;
+#[cfg(target_os = "windows")]
 mod clipboard;
 #[cfg(target_os = "windows")]
 mod dpi;
 #[cfg(target_os = "windows")]
 mod mascot;
-#[cfg(target_os = "windows")]
-#[path = "view.rs"]
-mod base_view;
 #[cfg(target_os = "windows")]
 mod native_shell;
 #[cfg(not(target_os = "windows"))]
