@@ -328,11 +328,16 @@ jobs:
           set -euo pipefail
           dmg="dist/Mnemos-Collector-macOS-${{ matrix.architecture }}.dmg"
           update="dist/mnemos-collector-update-macos-${{ matrix.architecture }}"
+          expected_arch="${{ matrix.architecture }}"
+
+          if [ "$expected_arch" = "aarch64" ]; then
+            expected_arch="arm64"
+          fi
 
           test -s "$dmg"
           test -x "$update"
           codesign --verify --strict "$update"
-          file "$update" | grep -Fq '${{ matrix.architecture }}'
+          file "$update" | grep -Fq "$expected_arch"
 
       - name: Upload macOS release artifacts
         uses: actions/upload-artifact@v7
