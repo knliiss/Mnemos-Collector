@@ -6,12 +6,16 @@ mod clipboard;
 #[cfg(target_os = "windows")]
 mod dpi;
 #[cfg(target_os = "macos")]
+mod macos_desktop;
+#[cfg(target_os = "macos")]
+mod macos_mascot;
+#[cfg(target_os = "macos")]
 mod macos_native;
 #[cfg(target_os = "windows")]
 mod mascot;
 #[cfg(target_os = "windows")]
 mod native_shell;
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 mod portable;
 #[cfg(not(target_os = "windows"))]
 mod portable_instance;
@@ -49,7 +53,28 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
     native_shell::run(context, runtime)
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
+    let Some(instance_guard) = portable_instance::InstanceGuard::acquire()? else {
+        crate::diagnostics::info(
+            "desktop",
+            "Another Collector instance is already running; duplicate launch ignored",
+        );
+        return Ok(());
+    };
+
+    let launch_installed = macos_desktop::run(context, runtime)?;
+
+    drop(instance_guard);
+
+    if launch_installed {
+        crate::platform::Installation::launch_current_installation()?;
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
 pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
     let Some(_instance_guard) = portable_instance::InstanceGuard::acquire()? else {
         crate::diagnostics::info(
@@ -68,7 +93,12 @@ pub fn show_fatal_error(message: &str) {
     native_shell::show_fatal_error(message);
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+pub fn show_fatal_error(message: &str) {
+    macos_desktop::show_fatal_error(message);
+}
+
+#[cfg(target_os = "linux")]
 pub fn show_fatal_error(message: &str) {
     portable::show_fatal_error(message);
 }

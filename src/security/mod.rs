@@ -1,9 +1,11 @@
 use anyhow::{Context, Result, bail};
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 use keyring::{Entry, Error as KeyringError};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -28,7 +30,19 @@ impl CredentialStore {
             Ok(access_key)
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
+        {
+            let access_key = macos::load(ACCESS_KEY_ACCOUNT)
+                .context("failed to read collector access key from macOS private storage")?;
+
+            if let Some(access_key) = access_key.as_deref() {
+                validate_access_key(access_key)?;
+            }
+
+            Ok(access_key)
+        }
+
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         {
             let entry = Entry::new(KEYRING_SERVICE, ACCESS_KEY_ACCOUNT)
                 .context("failed to open the operating-system credential store")?;
@@ -57,7 +71,13 @@ impl CredentialStore {
             .context("failed to save collector access key")
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
+        {
+            macos::save(ACCESS_KEY_ACCOUNT, access_key)
+                .context("failed to save collector access key in macOS private storage")
+        }
+
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         {
             Entry::new(KEYRING_SERVICE, ACCESS_KEY_ACCOUNT)
                 .context("failed to open the operating-system credential store")?
@@ -82,7 +102,11 @@ impl PendingProvisioningStore {
         #[cfg(target_os = "windows")]
         let encoded = windows::load(&credential_target(PENDING_PROVISIONING_ACCOUNT))?;
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
+        let encoded = macos::load(PENDING_PROVISIONING_ACCOUNT)
+            .context("failed to read pending provisioning secret from macOS private storage")?;
+
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         let encoded = {
             let entry = Entry::new(KEYRING_SERVICE, PENDING_PROVISIONING_ACCOUNT)
                 .context("failed to open the operating-system credential store")?;
@@ -132,7 +156,13 @@ impl PendingProvisioningStore {
             .context("failed to save pending provisioning secret")
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
+        {
+            macos::save(PENDING_PROVISIONING_ACCOUNT, &encoded)
+                .context("failed to save pending provisioning secret in macOS private storage")
+        }
+
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         {
             Entry::new(KEYRING_SERVICE, PENDING_PROVISIONING_ACCOUNT)
                 .context("failed to open the operating-system credential store")?
@@ -148,7 +178,13 @@ impl PendingProvisioningStore {
                 .context("failed to clear pending provisioning secret")
         }
 
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
+        {
+            macos::delete(PENDING_PROVISIONING_ACCOUNT)
+                .context("failed to clear pending provisioning secret from macOS private storage")
+        }
+
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         {
             let entry = Entry::new(KEYRING_SERVICE, PENDING_PROVISIONING_ACCOUNT)
                 .context("failed to open the operating-system credential store")?;
