@@ -70,12 +70,11 @@ pub fn clear_configured_latest_log_path() -> io::Result<()> {
 }
 
 pub fn discover_latest_log(
-    configured_path: Option<&Path>,
     cached_path: Option<&Path>,
     process_candidates: &[PathBuf],
 ) -> Option<PathBuf> {
-    if let Some(path) = configured_path.filter(|path| path.is_file()) {
-        return Some(path.to_path_buf());
+    if let Some(path) = configured_latest_log_path().filter(|path| path.is_file()) {
+        return Some(path);
     }
 
     if let Some(path) = process_candidates.iter().find(|path| path.is_file()) {
@@ -112,31 +111,6 @@ mod tests {
     }
 
     #[test]
-    fn configured_path_has_priority_over_process_and_cache() {
-        let directory = std::env::temp_dir().join(format!("mnemos-discovery-{}", Uuid::now_v7()));
-        let configured = directory.join("configured").join("game.log");
-        let process = directory.join("process").join("latest.log");
-        let cached = directory.join("cached").join("latest.log");
-
-        fs::create_dir_all(configured.parent().unwrap()).unwrap();
-        fs::create_dir_all(process.parent().unwrap()).unwrap();
-        fs::create_dir_all(cached.parent().unwrap()).unwrap();
-        fs::write(&configured, b"").unwrap();
-        fs::write(&process, b"").unwrap();
-        fs::write(&cached, b"").unwrap();
-
-        let discovered = discover_latest_log(
-            Some(&configured),
-            Some(&cached),
-            std::slice::from_ref(&process),
-        );
-
-        assert_eq!(discovered, Some(configured));
-
-        let _ = fs::remove_dir_all(directory);
-    }
-
-    #[test]
     fn running_process_candidate_has_priority_over_cached_path() {
         let directory = std::env::temp_dir().join(format!("mnemos-discovery-{}", Uuid::now_v7()));
         let cached = directory.join("cached").join("latest.log");
@@ -147,7 +121,7 @@ mod tests {
         fs::write(&cached, b"").unwrap();
         fs::write(&process, b"").unwrap();
 
-        let discovered = discover_latest_log(None, Some(&cached), std::slice::from_ref(&process));
+        let discovered = discover_latest_log(Some(&cached), std::slice::from_ref(&process));
 
         assert_eq!(discovered, Some(process));
 
@@ -162,10 +136,7 @@ mod tests {
         fs::create_dir_all(&directory).unwrap();
         fs::write(&cached, b"").unwrap();
 
-        assert_eq!(
-            discover_latest_log(None, Some(&cached), &[]),
-            Some(cached.clone())
-        );
+        assert_eq!(discover_latest_log(Some(&cached), &[]), Some(cached.clone()));
 
         let _ = fs::remove_dir_all(directory);
     }
