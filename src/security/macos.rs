@@ -1,205 +1,169 @@
-use std::ffi::c_void;
-use std::ptr::{null, null_mut};
+use std::fs::{self, OpenOptions, Permissions};
+use std::io::{ErrorKind, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
+use directories::BaseDirs;
+use uuid::Uuid;
 
-const ERR_SEC_SUCCESS: i32 = 0;
-const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
-const ERR_SEC_DUPLICATE_ITEM: i32 = -25299;
+const APPLICATION_DIRECTORY: &str = "Mnemos Collector";
+const CREDENTIALS_DIRECTORY: &str = "credentials";
+const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
+const PRIVATE_FILE_MODE: u32 = 0o600;
 
-#[link(name = "Security", kind = "framework")]
-unsafe extern "C" {
-    fn SecKeychainFindGenericPassword(
-        keychain_or_array: *const c_void,
-        service_name_length: u32,
-        service_name: *const u8,
-        account_name_length: u32,
-        account_name: *const u8,
-        password_length: *mut u32,
-        password_data: *mut *mut c_void,
-        item_ref: *mut *mut c_void,
-    ) -> i32;
+pub fn load(account: &str) -> Result<Option<String>> {
+    let path = credential_path(account)?;
 
-    fn SecKeychainAddGenericPassword(
-        keychain: *const c_void,
-        service_name_length: u32,
-        service_name: *const u8,
-        account_name_length: u32,
-        account_name: *const u8,
-        password_length: u32,
-        password_data: *const c_void,
-        item_ref: *mut *mut c_void,
-    ) -> i32;
-
-    fn SecKeychainItemModifyAttributesAndData(
-        item_ref: *mut c_void,
-        attribute_list: *const c_void,
-        data_length: u32,
-        data: *const c_void,
-    ) -> i32;
-
-    fn SecKeychainItemDelete(item_ref: *mut c_void) -> i32;
-
-    fn SecKeychainItemFreeContent(attribute_list: *const c_void, data: *mut c_void) -> i32;
+    load_from_path(&path)
 }
 
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFRelease(value: *const c_void);
+pub fn save(account: &str, value: &str) -> Result<()> {
+    let path = credential_path(account)?;
+
+    save_to_path(&path, value)
 }
 
-pub fn load(service: &str, account: &str) -> Result<Option<String>> {
-    let mut password_length = 0_u32;
-    let mut password_data = null_mut();
+pub fn delete(account: &str) -> Result<()> {
+    let path = credential_path(account)?;
 
-    let status = unsafe {
-        SecKeychainFindGenericPassword(
-            null(),
-            checked_length(service)?,
-            service.as_ptr(),
-            checked_length(account)?,
-            account.as_ptr(),
-            &mut password_length,
-            &mut password_data,
-            null_mut(),
-        )
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!("failed to delete macOS collector credential {}", path.display())
+        }),
+    }
+}
+
+fn credential_path(account: &str) -> Result<PathBuf> {
+    validate_account_name(account)?;
+
+    let base_directories = BaseDirs::new().context("macOS user data directory is unavailable")?;
+
+    Ok(base_directories
+        .data_dir()
+        .join(APPLICATION_DIRECTORY)
+        .join(CREDENTIALS_DIRECTORY)
+        .join(format!("{account}.secret")))
+}
+
+fn validate_account_name(account: &str) -> Result<()> {
+    if account.is_empty()
+        || !account
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        bail!("macOS collector credential account name is invalid");
+    }
+
+    Ok(())
+}
+
+fn load_from_path(path: &Path) -> Result<Option<String>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to inspect macOS collector credential {}", path.display())
+            });
+        }
     };
 
-    if status == ERR_SEC_ITEM_NOT_FOUND {
-        return Ok(None);
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        bail!(
+            "macOS collector credential path is not a regular file: {}",
+            path.display()
+        );
     }
 
-    ensure_success(status, "read generic password")?;
+    fs::set_permissions(path, Permissions::from_mode(PRIVATE_FILE_MODE)).with_context(|| {
+        format!(
+            "failed to enforce private permissions on macOS collector credential {}",
+            path.display()
+        )
+    })?;
 
-    if password_data.is_null() {
-        bail!("macOS Keychain returned a credential without password data");
-    }
-
-    let bytes =
-        unsafe { std::slice::from_raw_parts(password_data.cast::<u8>(), password_length as usize) };
-    let value = String::from_utf8(bytes.to_vec())
-        .map_err(|error| anyhow::anyhow!("macOS Keychain credential is not valid UTF-8: {error}"));
-    let free_status = unsafe { SecKeychainItemFreeContent(null(), password_data) };
-
-    ensure_success(free_status, "free generic password content")?;
-
-    value.map(Some)
+    fs::read_to_string(path)
+        .map(Some)
+        .with_context(|| format!("failed to read macOS collector credential {}", path.display()))
 }
 
-pub fn save(service: &str, account: &str, value: &str) -> Result<()> {
-    let service_length = checked_length(service)?;
-    let account_length = checked_length(account)?;
-    let value_length = checked_length(value)?;
+fn save_to_path(path: &Path, value: &str) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("macOS collector credential path has no parent directory")?;
 
-    if let Some(item) = find_item(service, account)? {
-        return update_item(&item, value, value_length);
+    fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "failed to create macOS collector credential directory {}",
+            parent.display()
+        )
+    })?;
+    fs::set_permissions(parent, Permissions::from_mode(PRIVATE_DIRECTORY_MODE)).with_context(
+        || {
+            format!(
+                "failed to secure macOS collector credential directory {}",
+                parent.display()
+            )
+        },
+    )?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("macOS collector credential filename is invalid")?;
+    let temporary_path = parent.join(format!(".{file_name}.{}.tmp", Uuid::now_v7()));
+
+    let write_result = write_temporary_file(&temporary_path, value).and_then(|()| {
+        fs::rename(&temporary_path, path).with_context(|| {
+            format!(
+                "failed to atomically replace macOS collector credential {}",
+                path.display()
+            )
+        })
+    });
+
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temporary_path);
+
+        return Err(error);
     }
 
-    let add_status = unsafe {
-        SecKeychainAddGenericPassword(
-            null(),
-            service_length,
-            service.as_ptr(),
-            account_length,
-            account.as_ptr(),
-            value_length,
-            value.as_ptr().cast(),
-            null_mut(),
+    fs::set_permissions(path, Permissions::from_mode(PRIVATE_FILE_MODE)).with_context(|| {
+        format!(
+            "failed to enforce private permissions on macOS collector credential {}",
+            path.display()
         )
-    };
+    })
+}
 
-    if add_status == ERR_SEC_DUPLICATE_ITEM {
-        let item = find_item(service, account)?.ok_or_else(|| {
-            anyhow::anyhow!("macOS Keychain reported a duplicate credential but returned no item")
+fn write_temporary_file(path: &Path, value: &str) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(PRIVATE_FILE_MODE)
+        .open(path)
+        .with_context(|| {
+            format!(
+                "failed to create temporary macOS collector credential {}",
+                path.display()
+            )
         })?;
 
-        return update_item(&item, value, value_length);
-    }
-
-    ensure_success(add_status, "add generic password")
-}
-
-pub fn delete(service: &str, account: &str) -> Result<()> {
-    let Some(item) = find_item(service, account)? else {
-        return Ok(());
-    };
-
-    let delete_status = unsafe { SecKeychainItemDelete(item.as_ptr()) };
-
-    ensure_success(delete_status, "delete generic password")
-}
-
-fn find_item(service: &str, account: &str) -> Result<Option<KeychainItem>> {
-    let mut item_ref = null_mut();
-    let status = unsafe {
-        SecKeychainFindGenericPassword(
-            null(),
-            checked_length(service)?,
-            service.as_ptr(),
-            checked_length(account)?,
-            account.as_ptr(),
-            null_mut(),
-            null_mut(),
-            &mut item_ref,
+    file.write_all(value.as_bytes()).with_context(|| {
+        format!(
+            "failed to write temporary macOS collector credential {}",
+            path.display()
         )
-    };
-
-    if status == ERR_SEC_ITEM_NOT_FOUND {
-        return Ok(None);
-    }
-
-    ensure_success(status, "find generic password")?;
-
-    KeychainItem::new(item_ref).map(Some)
-}
-
-fn update_item(item: &KeychainItem, value: &str, value_length: u32) -> Result<()> {
-    let status = unsafe {
-        SecKeychainItemModifyAttributesAndData(
-            item.as_ptr(),
-            null(),
-            value_length,
-            value.as_ptr().cast(),
+    })?;
+    file.sync_all().with_context(|| {
+        format!(
+            "failed to flush temporary macOS collector credential {}",
+            path.display()
         )
-    };
-
-    ensure_success(status, "update generic password")
-}
-
-fn checked_length(value: &str) -> Result<u32> {
-    u32::try_from(value.len()).map_err(|_| anyhow::anyhow!("Keychain value is too large"))
-}
-
-fn ensure_success(status: i32, operation: &str) -> Result<()> {
-    if status == ERR_SEC_SUCCESS {
-        return Ok(());
-    }
-
-    bail!("macOS Keychain failed to {operation} with OSStatus {status}")
-}
-
-struct KeychainItem(*mut c_void);
-
-impl KeychainItem {
-    fn new(value: *mut c_void) -> Result<Self> {
-        if value.is_null() {
-            bail!("macOS Keychain returned a null item reference");
-        }
-
-        Ok(Self(value))
-    }
-
-    fn as_ptr(&self) -> *mut c_void {
-        self.0
-    }
-}
-
-impl Drop for KeychainItem {
-    fn drop(&mut self) {
-        unsafe {
-            CFRelease(self.0.cast_const());
-        }
-    }
+    })
 }
 
 #[cfg(test)]
@@ -207,15 +171,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keychain_status_constants_match_security_framework() {
-        assert_eq!(ERR_SEC_SUCCESS, 0);
-        assert_eq!(ERR_SEC_DUPLICATE_ITEM, -25299);
-        assert_eq!(ERR_SEC_ITEM_NOT_FOUND, -25300);
+    fn rejects_unsafe_account_names() {
+        assert!(validate_account_name("collector-access-key").is_ok());
+        assert!(validate_account_name("pending_provisioning").is_ok());
+        assert!(validate_account_name("../credential").is_err());
+        assert!(validate_account_name("").is_err());
     }
 
     #[test]
-    fn checked_length_rejects_nothing_in_normal_collector_values() {
-        assert_eq!(checked_length("mnemos-collector").unwrap(), 16);
-        assert_eq!(checked_length("collector-access-key").unwrap(), 20);
+    fn private_file_store_persists_and_replaces_credentials() {
+        let root = std::env::temp_dir().join(format!("mnemos-credential-{}", Uuid::now_v7()));
+        let path = root.join("collector-access-key.secret");
+
+        save_to_path(&path, "first").unwrap();
+        assert_eq!(load_from_path(&path).unwrap().as_deref(), Some("first"));
+
+        save_to_path(&path, "second").unwrap();
+        assert_eq!(load_from_path(&path).unwrap().as_deref(), Some("second"));
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, PRIVATE_FILE_MODE);
+
+        fs::remove_dir_all(root).unwrap();
     }
 }
