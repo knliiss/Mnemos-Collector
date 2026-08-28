@@ -90,37 +90,9 @@ pub fn save(service: &str, account: &str, value: &str) -> Result<()> {
     let service_length = checked_length(service)?;
     let account_length = checked_length(account)?;
     let value_length = checked_length(value)?;
-    let mut item_ref = null_mut();
 
-    let find_status = unsafe {
-        SecKeychainFindGenericPassword(
-            null(),
-            service_length,
-            service.as_ptr(),
-            account_length,
-            account.as_ptr(),
-            null_mut(),
-            null_mut(),
-            &mut item_ref,
-        )
-    };
-
-    if find_status == ERR_SEC_SUCCESS {
-        let item = KeychainItem::new(item_ref)?;
-        let status = unsafe {
-            SecKeychainItemModifyAttributesAndData(
-                item.as_ptr(),
-                null(),
-                value_length,
-                value.as_ptr().cast(),
-            )
-        };
-
-        return ensure_success(status, "update generic password");
-    }
-
-    if find_status != ERR_SEC_ITEM_NOT_FOUND {
-        return ensure_success(find_status, "find generic password for update");
+    if let Some(item) = find_item(service, account)? {
+        return update_item(&item, value, value_length);
     }
 
     let add_status = unsafe {
@@ -137,13 +109,27 @@ pub fn save(service: &str, account: &str, value: &str) -> Result<()> {
     };
 
     if add_status == ERR_SEC_DUPLICATE_ITEM {
-        return save(service, account, value);
+        let item = find_item(service, account)?.ok_or_else(|| {
+            anyhow::anyhow!("macOS Keychain reported a duplicate credential but returned no item")
+        })?;
+
+        return update_item(&item, value, value_length);
     }
 
     ensure_success(add_status, "add generic password")
 }
 
 pub fn delete(service: &str, account: &str) -> Result<()> {
+    let Some(item) = find_item(service, account)? else {
+        return Ok(());
+    };
+
+    let delete_status = unsafe { SecKeychainItemDelete(item.as_ptr()) };
+
+    ensure_success(delete_status, "delete generic password")
+}
+
+fn find_item(service: &str, account: &str) -> Result<Option<KeychainItem>> {
     let mut item_ref = null_mut();
     let status = unsafe {
         SecKeychainFindGenericPassword(
@@ -159,15 +145,25 @@ pub fn delete(service: &str, account: &str) -> Result<()> {
     };
 
     if status == ERR_SEC_ITEM_NOT_FOUND {
-        return Ok(());
+        return Ok(None);
     }
 
-    ensure_success(status, "find generic password for deletion")?;
+    ensure_success(status, "find generic password")?;
 
-    let item = KeychainItem::new(item_ref)?;
-    let delete_status = unsafe { SecKeychainItemDelete(item.as_ptr()) };
+    KeychainItem::new(item_ref).map(Some)
+}
 
-    ensure_success(delete_status, "delete generic password")
+fn update_item(item: &KeychainItem, value: &str, value_length: u32) -> Result<()> {
+    let status = unsafe {
+        SecKeychainItemModifyAttributesAndData(
+            item.as_ptr(),
+            null(),
+            value_length,
+            value.as_ptr().cast(),
+        )
+    };
+
+    ensure_success(status, "update generic password")
 }
 
 fn checked_length(value: &str) -> Result<u32> {
