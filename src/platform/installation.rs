@@ -182,7 +182,7 @@ fn move_existing_to_backup(target: &Path, backup: &Path, retry_locked_file: bool
     loop {
         match fs::rename(target, backup) {
             Ok(()) => return Ok(()),
-            Err(error) if retry_locked_file && Instant::now() < deadline => {
+            Err(_) if retry_locked_file && Instant::now() < deadline => {
                 std::thread::sleep(REPLACEMENT_RETRY_INTERVAL);
             }
             Err(error) => {
