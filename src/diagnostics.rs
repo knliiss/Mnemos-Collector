@@ -187,7 +187,11 @@ pub fn diagnostic_report() -> String {
     [
         "=== MNEMOS COLLECTOR DIAGNOSTICS ===".to_owned(),
         format!("Version: {}", env!("CARGO_PKG_VERSION")),
-        format!("Platform: {}-{}", std::env::consts::OS, std::env::consts::ARCH),
+        format!(
+            "Platform: {}-{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        ),
         format!("Installation: {}", runtime.installation_mode.label()),
         format!(
             "Cristalix: {}",
@@ -315,11 +319,7 @@ pub fn mark_log_activity() {
     update_runtime(|runtime| runtime.last_log_activity_at = Some(Utc::now()));
 }
 
-pub fn set_spool_state(
-    pending: usize,
-    capacity: usize,
-    oldest_pending_at: Option<DateTime<Utc>>,
-) {
+pub fn set_spool_state(pending: usize, capacity: usize, oldest_pending_at: Option<DateTime<Utc>>) {
     update_runtime(|runtime| {
         runtime.spool_pending = pending;
         runtime.spool_capacity = capacity;
@@ -453,7 +453,10 @@ impl RotatingLogWriter {
 
         fs::create_dir_all(parent)?;
 
-        if path.metadata().is_ok_and(|metadata| metadata.len() >= max_bytes) {
+        if path
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() >= max_bytes)
+        {
             rotate_log_files(path, retained_files)?;
         }
 
@@ -472,7 +475,8 @@ impl RotatingLogWriter {
     fn write_line(&mut self, line: &str) -> std::io::Result<()> {
         let line_bytes = line.as_bytes().len() as u64 + 1;
 
-        if self.bytes_written > 0 && self.bytes_written.saturating_add(line_bytes) > self.max_bytes {
+        if self.bytes_written > 0 && self.bytes_written.saturating_add(line_bytes) > self.max_bytes
+        {
             self.rotate()?;
         }
 
@@ -596,7 +600,9 @@ mod tests {
         let mut writer = RotatingLogWriter::open(&path, 32, 2).unwrap();
 
         for index in 0..12 {
-            writer.write_line(&format!("line-{index:02}-xxxxxxxx")).unwrap();
+            writer
+                .write_line(&format!("line-{index:02}-xxxxxxxx"))
+                .unwrap();
         }
 
         assert!(path.exists());

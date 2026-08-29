@@ -12,8 +12,8 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use tokio_tungstenite::tungstenite::http::HeaderMap;
+use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
@@ -363,9 +363,7 @@ fn require_collector_upgrade(minimum_version: &str, message: Option<&str>) -> Re
     diagnostics::set_required_update_version(Some(minimum.to_string()));
 
     if let Some(message) = message.filter(|message| !message.trim().is_empty()) {
-        bail!(
-            "collector {current} must be upgraded to {minimum} or newer: {message}"
-        );
+        bail!("collector {current} must be upgraded to {minimum} or newer: {message}");
     }
 
     bail!("collector {current} must be upgraded to {minimum} or newer")
