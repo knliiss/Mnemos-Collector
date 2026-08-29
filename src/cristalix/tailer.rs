@@ -6,6 +6,8 @@ use same_file::Handle;
 use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 
+use crate::diagnostics;
+
 #[derive(Debug)]
 pub struct LogTailer {
     path: PathBuf,
@@ -87,7 +89,13 @@ impl LogTailer {
         self.offset += read as u64;
         self.pending.extend_from_slice(&appended);
 
-        Ok(self.take_complete_lines())
+        let lines = self.take_complete_lines();
+
+        if !lines.is_empty() {
+            diagnostics::mark_log_activity();
+        }
+
+        Ok(lines)
     }
 
     async fn reopen_from_end(&mut self) -> Result<()> {
