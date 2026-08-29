@@ -14,7 +14,7 @@ use super::{base_view, theme};
 const COLLECTOR_VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 const VERSION_TOP_MARGIN: i32 = 3;
 const UPDATE_BUTTON_WIDTH: i32 = 184;
-const UPDATE_BUTTON_RIGHT_GAP: i32 = 12;
+const UPDATE_BUTTON_GAP: i32 = 10;
 
 pub(super) fn layout(width: i32, height: i32, provisioned: bool) -> Layout {
     base_view::layout(width, height, provisioned)
@@ -82,13 +82,13 @@ pub(super) unsafe fn fill_background(
 }
 
 fn update_button_rect(layout: Layout) -> UiRect {
-    let right = layout.window_minimize.left - UPDATE_BUTTON_RIGHT_GAP;
+    let right = layout.copy_logs.left - UPDATE_BUTTON_GAP;
 
     UiRect {
         left: right - UPDATE_BUTTON_WIDTH,
-        top: 13,
+        top: layout.copy_logs.top,
         right,
-        bottom: 47,
+        bottom: layout.copy_logs.bottom,
     }
 }
 
@@ -200,12 +200,14 @@ mod tests {
     }
 
     #[test]
-    fn update_button_stays_clear_of_window_controls() {
+    fn update_button_aligns_with_journal_actions() {
         let layout = layout(1080, 720, true);
         let update = update_button_rect(layout);
 
-        assert!(update.right < layout.window_minimize.left);
-        assert!(update.left > 200);
+        assert!(update.right < layout.copy_logs.left);
+        assert_eq!(update.top, layout.copy_logs.top);
+        assert_eq!(update.bottom, layout.copy_logs.bottom);
+        assert!(update.left > layout.logs_card.left);
     }
 
     #[test]
