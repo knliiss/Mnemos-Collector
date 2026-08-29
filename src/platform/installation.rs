@@ -108,12 +108,7 @@ fn ensure_installed(target: &Path, stop_existing_instance: bool) -> Result<()> {
         }
     }
 
-    install_current_executable(
-        &current,
-        target,
-        current_version,
-        stop_existing_instance,
-    )
+    install_current_executable(&current, target, current_version, stop_existing_instance)
 }
 
 fn install_current_executable(
@@ -191,9 +186,8 @@ fn move_existing_to_backup(target: &Path, backup: &Path, retry_locked_file: bool
                 std::thread::sleep(REPLACEMENT_RETRY_INTERVAL);
             }
             Err(error) => {
-                return Err(error).context(
-                    "failed to move the previous collector installation out of the way",
-                );
+                return Err(error)
+                    .context("failed to move the previous collector installation out of the way");
             }
         }
     }
@@ -229,8 +223,7 @@ fn read_version_marker(target: &Path) -> Result<Option<CollectorVersion>> {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
-            return Err(error)
-                .with_context(|| format!("failed to read {}", marker.display()));
+            return Err(error).with_context(|| format!("failed to read {}", marker.display()));
         }
     };
 
@@ -244,8 +237,7 @@ fn write_version_marker(target: &Path, version: CollectorVersion) -> Result<()> 
     let marker = version_marker_path(target);
     let content = format!("{version}\n");
 
-    fs::write(&marker, content)
-        .with_context(|| format!("failed to write {}", marker.display()))?;
+    fs::write(&marker, content).with_context(|| format!("failed to write {}", marker.display()))?;
     sync_file(&marker)
 }
 
@@ -383,7 +375,10 @@ mod tests {
         let marker = version_marker_path(&target);
 
         assert_eq!(marker.parent(), target.parent());
-        assert_eq!(marker.extension().and_then(|value| value.to_str()), Some("version"));
+        assert_eq!(
+            marker.extension().and_then(|value| value.to_str()),
+            Some("version")
+        );
     }
 
     #[test]
