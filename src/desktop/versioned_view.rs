@@ -128,9 +128,8 @@ unsafe fn draw_update_button(
         SelectObject(hdc, previous_brush);
         DeleteObject(pen);
         DeleteObject(brush);
+        draw_centered_text(hdc, rect, &label, font, text_color);
     }
-
-    draw_centered_text(hdc, rect, &label, font, text_color);
 }
 
 unsafe fn draw_centered_text(
