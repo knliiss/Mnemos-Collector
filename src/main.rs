@@ -1,5 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+use std::time::Duration;
+
 use anyhow::{Context, Result, bail};
 use mnemos_collector::desktop::{self, DesktopLaunchContext};
 use mnemos_collector::diagnostics;
@@ -12,6 +14,7 @@ use mnemos_collector::update::{
 };
 
 const APPLY_UPDATE_FLAG: &str = "--apply-update";
+const VERSION_MARKER_DELAY: Duration = Duration::from_secs(3);
 
 #[tokio::main]
 async fn main() {
@@ -65,11 +68,6 @@ async fn run() -> Result<()> {
     let current_installation = Installation::is_current_installation()
         .context("failed to verify collector installation location")?;
 
-    if current_installation {
-        Installation::record_current_version()
-            .context("failed to persist collector installation version")?;
-    }
-
     if arguments.activation_token.is_some() && !current_installation {
         bail!(
             "collector provisioning must run from the stable installation; use --install --activation-token <TOKEN>"
@@ -111,6 +109,10 @@ async fn run() -> Result<()> {
         prepare_provisioned_startup(&arguments)?;
     }
 
+    if current_installation {
+        schedule_version_marker_recording();
+    }
+
     desktop::run(
         DesktopLaunchContext {
             current_installation,
@@ -136,4 +138,17 @@ fn prepare_provisioned_startup(arguments: &LaunchArguments) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn schedule_version_marker_recording() {
+    tokio::spawn(async {
+        tokio::time::sleep(VERSION_MARKER_DELAY).await;
+
+        if let Err(error) = Installation::record_current_version() {
+            diagnostics::warn(
+                "installation",
+                format!("Failed to persist collector installation version: {error:#}"),
+            );
+        }
+    });
 }
