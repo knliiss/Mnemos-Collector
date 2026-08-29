@@ -65,6 +65,11 @@ async fn run() -> Result<()> {
     let current_installation = Installation::is_current_installation()
         .context("failed to verify collector installation location")?;
 
+    if current_installation {
+        Installation::record_current_version()
+            .context("failed to persist collector installation version")?;
+    }
+
     if arguments.activation_token.is_some() && !current_installation {
         bail!(
             "collector provisioning must run from the stable installation; use --install --activation-token <TOKEN>"
