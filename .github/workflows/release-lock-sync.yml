@@ -1,0 +1,60 @@
+name: Release lock sync
+
+on:
+  push:
+    branches:
+      - "chore/release-0.1.5"
+
+permissions:
+  contents: write
+
+jobs:
+  sync-lock:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v7
+        with:
+          ref: chore/release-0.1.5
+
+      - name: Install Rust
+        shell: bash
+        run: rustup toolchain install 1.98.0 --profile minimal
+
+      - name: Synchronize Cargo.lock
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cargo +1.98.0 check
+
+          git diff -- Cargo.lock
+
+          grep -A2 'name = "mnemos-collector"' Cargo.lock \
+            | grep -F 'version = "0.1.5"'
+
+          changed_files="$(git status --short | awk '{print $2}' | sort -u)"
+
+          if [ "$changed_files" != "Cargo.lock" ]; then
+            echo "Unexpected files changed while synchronizing Cargo.lock:"
+            printf '%s\n' "$changed_files"
+            exit 1
+          fi
+
+          removed_versions="$(git diff -- Cargo.lock | grep -c '^-version = "0.1.4"$' || true)"
+          added_versions="$(git diff -- Cargo.lock | grep -c '^+version = "0.1.5"$' || true)"
+          changed_lines="$(git diff --unified=0 -- Cargo.lock | grep -E '^[+-][^+-]' | wc -l | tr -d ' ')"
+
+          if [ "$removed_versions" != "1" ] || [ "$added_versions" != "1" ] || [ "$changed_lines" != "2" ]; then
+            echo "Cargo.lock changed beyond the expected root package version bump."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock
+          git commit -m "Sync Cargo.lock for 0.1.5"
+          git push origin HEAD:chore/release-0.1.5
