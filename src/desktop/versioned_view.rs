@@ -1,5 +1,6 @@
 use std::ffi::c_void;
 
+use chrono::Utc;
 use windows_sys::Win32::Foundation::SIZE;
 use windows_sys::Win32::Graphics::Gdi::{
     CreatePen, CreateSolidBrush, DeleteObject, GetTextExtentPoint32W, RoundRect, SelectObject,
@@ -15,6 +16,8 @@ const COLLECTOR_VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 const VERSION_TOP_MARGIN: i32 = 3;
 const UPDATE_BUTTON_WIDTH: i32 = 184;
 const UPDATE_BUTTON_GAP: i32 = 10;
+const DIAGNOSTICS_LEFT_OFFSET: i32 = 178;
+const DIAGNOSTICS_RIGHT_GAP: i32 = 8;
 
 pub(super) fn layout(width: i32, height: i32, provisioned: bool) -> Layout {
     base_view::layout(width, height, provisioned)
@@ -67,6 +70,7 @@ pub(super) unsafe fn draw(
 ) {
     unsafe {
         base_view::draw(hdc, runtime, layout, fonts, state);
+        draw_diagnostics_summary(hdc, runtime, layout, fonts.ui);
         draw_update_button(hdc, runtime, layout, fonts.ui);
         draw_version(hdc, layout, fonts.ui);
     }
@@ -89,6 +93,100 @@ fn update_button_rect(layout: Layout) -> UiRect {
         top: layout.copy_logs.top,
         right,
         bottom: layout.copy_logs.bottom,
+    }
+}
+
+fn diagnostics_summary_rect(layout: Layout, runtime: &RuntimeSnapshot) -> UiRect {
+    let right = if runtime.available_update_version.is_some() {
+        update_button_rect(layout).left - DIAGNOSTICS_RIGHT_GAP
+    } else {
+        layout.copy_logs.left - DIAGNOSTICS_RIGHT_GAP
+    };
+
+    UiRect {
+        left: layout.logs_card.left + DIAGNOSTICS_LEFT_OFFSET,
+        top: layout.copy_logs.top,
+        right,
+        bottom: layout.copy_logs.bottom,
+    }
+}
+
+fn diagnostics_summary(runtime: &RuntimeSnapshot) -> String {
+    if let Some(required) = runtime.required_update_version.as_deref() {
+        return format!("ТРЕБУЕТСЯ ОБНОВЛЕНИЕ ДО v{required}");
+    }
+
+    let protocol = match (
+        runtime.collector_protocol_version,
+        runtime.server_protocol_version,
+    ) {
+        (Some(collector), Some(server)) if collector == server => format!("P{collector}"),
+        (Some(collector), Some(server)) => format!("P{collector}/{server}"),
+        (Some(collector), None) => format!("P{collector}"),
+        _ => "P?".to_owned(),
+    };
+    let queue = if runtime.spool_capacity == 0 {
+        format!("QUEUE {}", runtime.spool_pending)
+    } else {
+        format!("QUEUE {}/{}", runtime.spool_pending, runtime.spool_capacity)
+    };
+    let log = format!("LOG {}", age_compact(runtime.last_log_activity_at));
+    let realtime = format!("WS {}", age_compact(runtime.last_realtime_message_at));
+
+    format!("{queue}  ·  {protocol}  ·  {log}  ·  {realtime}")
+}
+
+fn diagnostics_summary_color(runtime: &RuntimeSnapshot) -> u32 {
+    if runtime.required_update_version.is_some() {
+        return theme::DANGER;
+    }
+
+    if runtime.spool_capacity > 0
+        && runtime.spool_pending.saturating_mul(10) >= runtime.spool_capacity.saturating_mul(9)
+    {
+        return theme::AMBER;
+    }
+
+    theme::TEXT_MUTED
+}
+
+fn age_compact(timestamp: Option<chrono::DateTime<Utc>>) -> String {
+    let Some(timestamp) = timestamp else {
+        return "—".to_owned();
+    };
+    let seconds = Utc::now()
+        .signed_duration_since(timestamp)
+        .num_seconds()
+        .max(0);
+
+    match seconds {
+        0..=4 => "now".to_owned(),
+        5..=59 => format!("{seconds}s"),
+        60..=3_599 => format!("{}m", seconds / 60),
+        _ => format!("{}h", seconds / 3_600),
+    }
+}
+
+unsafe fn draw_diagnostics_summary(
+    hdc: *mut c_void,
+    runtime: &RuntimeSnapshot,
+    layout: Layout,
+    font: *mut c_void,
+) {
+    let rect = diagnostics_summary_rect(layout, runtime);
+
+    if rect.width() < 40 {
+        return;
+    }
+
+    unsafe {
+        draw_clipped_text(
+            hdc,
+            rect,
+            &diagnostics_summary(runtime),
+            font,
+            diagnostics_summary_color(runtime),
+        );
     }
 }
 
@@ -158,6 +256,50 @@ unsafe fn draw_centered_text(
     }
 }
 
+unsafe fn draw_clipped_text(
+    hdc: *mut c_void,
+    rect: UiRect,
+    value: &str,
+    font: *mut c_void,
+    color: u32,
+) {
+    let mut rendered = value.to_owned();
+    let previous_font = unsafe { SelectObject(hdc, font) };
+    let mut size = SIZE { cx: 0, cy: 0 };
+
+    loop {
+        let text = rendered.encode_utf16().collect::<Vec<_>>();
+
+        unsafe {
+            GetTextExtentPoint32W(hdc, text.as_ptr(), text.len() as i32, &mut size);
+        }
+
+        if size.cx <= rect.width() || rendered.chars().count() <= 4 {
+            unsafe {
+                SetTextColor(hdc, color);
+                SetBkMode(hdc, 1);
+                TextOutW(
+                    hdc,
+                    rect.left,
+                    rect.top + (rect.height() - size.cy) / 2,
+                    text.as_ptr(),
+                    text.len() as i32,
+                );
+                SelectObject(hdc, previous_font);
+            }
+            return;
+        }
+
+        rendered.pop();
+
+        while !rendered.is_char_boundary(rendered.len()) {
+            rendered.pop();
+        }
+
+        rendered = format!("{}…", rendered.trim_end_matches('…'));
+    }
+}
+
 unsafe fn draw_version(hdc: *mut c_void, layout: Layout, font: *mut c_void) {
     let text = COLLECTOR_VERSION.encode_utf16().collect::<Vec<_>>();
     let previous_font = unsafe { SelectObject(hdc, font) };
@@ -182,7 +324,10 @@ unsafe fn draw_version(hdc: *mut c_void, layout: Layout, font: *mut c_void) {
 mod tests {
     use crate::diagnostics::RuntimeSnapshot;
 
-    use super::{COLLECTOR_VERSION, layout, update_button_contains, update_button_rect};
+    use super::{
+        COLLECTOR_VERSION, diagnostics_summary, layout, update_button_contains,
+        update_button_rect,
+    };
 
     #[test]
     fn version_uses_short_release_format() {
@@ -224,5 +369,33 @@ mod tests {
 
         runtime.update_installing = true;
         assert!(!update_button_contains(layout, &runtime, x, y));
+    }
+
+    #[test]
+    fn diagnostics_summary_surfaces_queue_and_protocol() {
+        let runtime = RuntimeSnapshot {
+            spool_pending: 12,
+            spool_capacity: 1_024,
+            collector_protocol_version: Some(1),
+            server_protocol_version: Some(1),
+            ..RuntimeSnapshot::default()
+        };
+        let summary = diagnostics_summary(&runtime);
+
+        assert!(summary.contains("QUEUE 12/1024"));
+        assert!(summary.contains("P1"));
+    }
+
+    #[test]
+    fn diagnostics_summary_prioritizes_forced_update() {
+        let runtime = RuntimeSnapshot {
+            required_update_version: Some("0.2.0".to_owned()),
+            ..RuntimeSnapshot::default()
+        };
+
+        assert_eq!(
+            diagnostics_summary(&runtime),
+            "ТРЕБУЕТСЯ ОБНОВЛЕНИЕ ДО v0.2.0"
+        );
     }
 }
