@@ -5,10 +5,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use uuid::Uuid;
 
+use crate::diagnostics;
 use crate::realtime::RealtimeClient;
-use crate::update::release::{
-    ReleaseClient, UpdateCandidate, UpdateConfig, deterministic_rollout_delay,
-};
+use crate::update::release::{ReleaseClient, UpdateCandidate, UpdateConfig};
 use crate::update::version::CollectorVersion;
 
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(15 * 60);
@@ -47,6 +46,7 @@ pub struct UpdateCoordinator {
     current_version: CollectorVersion,
     next_check_at: Instant,
     pending: Option<PendingUpdate>,
+    manual_install_requested: bool,
 }
 
 impl UpdateCoordinator {
@@ -57,20 +57,28 @@ impl UpdateCoordinator {
         let release_client = ReleaseClient::new(config)?;
         let current_version = CollectorVersion::from_str(env!("CARGO_PKG_VERSION"))
             .context("running collector version is invalid")?;
-        let initial_delay =
-            deterministic_rollout_delay(collector_id, current_version, UPDATE_CHECK_INTERVAL);
 
         Ok(Some(Self {
             release_client,
             collector_id,
             current_version,
-            next_check_at: Instant::now() + initial_delay,
+            next_check_at: Instant::now(),
             pending: None,
+            manual_install_requested: false,
         }))
     }
 
     pub fn has_pending_update(&self) -> bool {
         self.pending.is_some()
+    }
+
+    pub fn request_immediate_install(&mut self) {
+        self.manual_install_requested = true;
+        self.next_check_at = Instant::now();
+
+        if let Some(pending) = self.pending.as_mut() {
+            pending.ready_at = Instant::now();
+        }
     }
 
     pub async fn poll(
@@ -80,55 +88,72 @@ impl UpdateCoordinator {
     ) -> Result<Option<UpdateHandoffRequest>> {
         self.refresh_candidate_if_due().await?;
 
-        if !delivery_idle {
+        let manual_install = self.manual_install_requested;
+
+        if !delivery_idle && !manual_install {
             return Ok(None);
         }
 
         let Some(pending) = self.pending.as_ref() else {
+            if manual_install {
+                self.manual_install_requested = false;
+                diagnostics::set_update_installing(false);
+            }
+
             return Ok(None);
         };
 
-        if Instant::now() < pending.ready_at {
+        if !manual_install && Instant::now() < pending.ready_at {
             return Ok(None);
         }
 
-        let version = pending.candidate.version;
-        let Some(realtime) = realtime else {
-            return Ok(None);
-        };
-        let decision = realtime.request_update_slot(&version.to_string()).await?;
+        if let Some(realtime) = realtime {
+            let version = pending.candidate.version;
+            let decision = realtime.request_update_slot(&version.to_string()).await?;
 
-        if !decision.granted {
-            let retry_delay = decision
-                .retry_after
-                .unwrap_or(UPDATE_ERROR_RETRY_DELAY)
-                .max(MINIMUM_SLOT_RETRY_DELAY);
+            if !decision.granted {
+                let retry_delay = decision
+                    .retry_after
+                    .unwrap_or(UPDATE_ERROR_RETRY_DELAY)
+                    .max(MINIMUM_SLOT_RETRY_DELAY);
 
-            self.pending
-                .as_mut()
-                .expect("pending collector update disappeared")
-                .ready_at = Instant::now() + retry_delay;
+                self.pending
+                    .as_mut()
+                    .expect("pending collector update disappeared")
+                    .ready_at = Instant::now() + retry_delay;
 
+                return Ok(None);
+            }
+
+            realtime.pause().await?;
+        } else if !manual_install {
             return Ok(None);
         }
-
-        realtime.pause().await?;
 
         let pending = self
             .pending
             .take()
             .expect("granted collector update disappeared");
 
+        self.manual_install_requested = false;
+        diagnostics::set_available_update_version(None);
+        diagnostics::set_update_installing(true);
+
         Ok(Some(UpdateHandoffRequest { pending }))
     }
 
     pub fn restore_handoff(&mut self, mut request: UpdateHandoffRequest) {
         request.pending.ready_at = Instant::now() + UPDATE_ERROR_RETRY_DELAY;
+        diagnostics::set_available_update_version(Some(request.version().to_string()));
+        diagnostics::set_update_installing(false);
         self.pending = Some(request.pending);
     }
 
     pub fn defer_after_error(&mut self) {
         let retry_at = Instant::now() + UPDATE_ERROR_RETRY_DELAY;
+
+        diagnostics::set_update_installing(false);
+        self.manual_install_requested = false;
 
         if let Some(pending) = self.pending.as_mut() {
             pending.ready_at = retry_at;
@@ -145,12 +170,20 @@ impl UpdateCoordinator {
         self.next_check_at = Instant::now() + UPDATE_CHECK_INTERVAL;
 
         let Some(candidate) = self.release_client.check(self.current_version).await? else {
+            diagnostics::set_available_update_version(None);
+            diagnostics::set_update_installing(false);
+            self.manual_install_requested = false;
             return Ok(());
         };
         let staged_executable = self.release_client.stage(&candidate).await?;
-        let rollout_delay = self
-            .release_client
-            .rollout_delay(self.collector_id, candidate.version);
+        let rollout_delay = if self.manual_install_requested {
+            Duration::ZERO
+        } else {
+            self.release_client
+                .rollout_delay(self.collector_id, candidate.version)
+        };
+
+        diagnostics::set_available_update_version(Some(candidate.version.to_string()));
 
         self.pending = Some(PendingUpdate {
             candidate,
