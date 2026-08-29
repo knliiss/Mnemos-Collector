@@ -289,10 +289,6 @@ pub fn set_required_update_version(version: Option<String>) {
         runtime.required_update_version = version.clone();
 
         if let Some(version) = version {
-            if runtime.available_update_version.is_none() {
-                runtime.available_update_version = Some(version.clone());
-            }
-
             runtime.last_error = Some(format!(
                 "Требуется обновление Collector до версии {version} или новее."
             ));
@@ -473,7 +469,7 @@ impl RotatingLogWriter {
     }
 
     fn write_line(&mut self, line: &str) -> std::io::Result<()> {
-        let line_bytes = line.as_bytes().len() as u64 + 1;
+        let line_bytes = line.len() as u64 + 1;
 
         if self.bytes_written > 0 && self.bytes_written.saturating_add(line_bytes) > self.max_bytes
         {

@@ -311,7 +311,6 @@ fn validate_handshake_headers(headers: &HeaderMap) -> Result<()> {
         diagnostics::set_protocol_versions(COLLECTOR_PROTOCOL_VERSION, None);
     } else {
         diagnostics::set_protocol_versions(COLLECTOR_PROTOCOL_VERSION, None);
-        diagnostics::set_required_update_version(None);
     }
 
     Ok(())
