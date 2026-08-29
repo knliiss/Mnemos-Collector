@@ -1,0 +1,141 @@
+name: Apply Update Slot State Fix
+
+on:
+  push:
+    branches:
+      - fix/update-slot-state
+    paths:
+      - ".github/workflows/apply-update-slot-state-fix.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fix branch
+        uses: actions/checkout@v7
+        with:
+          ref: fix/update-slot-state
+          fetch-depth: 0
+
+      - name: Apply state-machine fix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"Expected exactly one match in {path}, found {count}: {old[:80]!r}")
+              file.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "src/diagnostics.rs",
+              "    pub update_installing: bool,\n    pub installation_mode: InstallationMode,",
+              "    pub update_installing: bool,\n    pub update_waiting_for_slot: bool,\n    pub update_retry_after_seconds: Option<u64>,\n    pub installation_mode: InstallationMode,",
+          )
+
+          replace_once(
+              "src/diagnostics.rs",
+              "    let update_state = if runtime.update_installing {\n        \"installing\".to_owned()\n    } else if let Some(required) = runtime.required_update_version.as_deref() {",
+              "    let update_state = if runtime.update_installing {\n        \"installing\".to_owned()\n    } else if runtime.update_waiting_for_slot {\n        match runtime.update_retry_after_seconds {\n            Some(seconds) => format!(\"waiting for update slot; retry in {seconds}s\"),\n            None => \"waiting for update slot\".to_owned(),\n        }\n    } else if let Some(required) = runtime.required_update_version.as_deref() {",
+          )
+
+          replace_once(
+              "src/diagnostics.rs",
+              "    diagnostics\n        .update_install_requested\n        .store(true, Ordering::Release);\n    set_update_installing(true);\n    info(\"update\", \"Manual update requested from desktop UI\");",
+              "    diagnostics\n        .update_install_requested\n        .store(true, Ordering::Release);\n    set_update_waiting_for_slot(true, None);\n    info(\"update\", \"Manual update requested from desktop UI\");",
+          )
+
+          replace_once(
+              "src/diagnostics.rs",
+              "pub fn set_update_installing(installing: bool) {\n    update_runtime(|runtime| runtime.update_installing = installing);\n}\n",
+              "pub fn set_update_installing(installing: bool) {\n    update_runtime(|runtime| {\n        runtime.update_installing = installing;\n\n        if installing {\n            runtime.update_waiting_for_slot = false;\n            runtime.update_retry_after_seconds = None;\n        }\n    });\n}\n\npub fn set_update_waiting_for_slot(waiting: bool, retry_after_seconds: Option<u64>) {\n    update_runtime(|runtime| {\n        runtime.update_waiting_for_slot = waiting;\n        runtime.update_retry_after_seconds = waiting.then_some(retry_after_seconds).flatten();\n\n        if waiting {\n            runtime.update_installing = false;\n        }\n    });\n}\n",
+          )
+
+          replace_once(
+              "src/update/coordinator.rs",
+              "        if !manual_install && Instant::now() < pending.ready_at {\n            return Ok(None);\n        }",
+              "        if Instant::now() < pending.ready_at {\n            return Ok(None);\n        }",
+          )
+
+          replace_once(
+              "src/update/coordinator.rs",
+              "                self.pending\n                    .as_mut()\n                    .expect(\"pending collector update disappeared\")\n                    .ready_at = Instant::now() + retry_delay;\n\n                return Ok(None);",
+              "                self.pending\n                    .as_mut()\n                    .expect(\"pending collector update disappeared\")\n                    .ready_at = Instant::now() + retry_delay;\n\n                diagnostics::set_update_waiting_for_slot(\n                    true,\n                    Some(retry_delay.as_secs()),\n                );\n                diagnostics::info(\n                    \"update\",\n                    format!(\n                        \"Update slot is busy; retrying in {} second(s)\",\n                        retry_delay.as_secs()\n                    ),\n                );\n\n                return Ok(None);",
+          )
+
+          replace_once(
+              "src/update/coordinator.rs",
+              "            realtime.pause().await?;\n        } else if !manual_install {",
+              "            diagnostics::set_update_waiting_for_slot(false, None);\n            diagnostics::set_update_installing(true);\n            realtime.pause().await?;\n        } else if !manual_install {",
+          )
+
+          replace_once(
+              "src/update/coordinator.rs",
+              "        self.manual_install_requested = false;\n        diagnostics::set_available_update_version(None);\n        diagnostics::set_update_installing(true);",
+              "        self.manual_install_requested = false;\n        diagnostics::set_available_update_version(None);\n        diagnostics::set_update_waiting_for_slot(false, None);\n        diagnostics::set_update_installing(true);",
+          )
+
+          replace_once(
+              "src/update/coordinator.rs",
+              "        diagnostics::set_available_update_version(Some(request.version().to_string()));\n        diagnostics::set_update_installing(false);",
+              "        diagnostics::set_available_update_version(Some(request.version().to_string()));\n        diagnostics::set_update_waiting_for_slot(false, None);\n        diagnostics::set_update_installing(false);",
+          )
+
+          replace_once(
+              "src/update/coordinator.rs",
+              "        diagnostics::set_update_installing(false);\n        self.manual_install_requested = false;",
+              "        diagnostics::set_update_waiting_for_slot(false, None);\n        diagnostics::set_update_installing(false);\n        self.manual_install_requested = false;",
+          )
+
+          replace_once(
+              "src/update/coordinator.rs",
+              "            diagnostics::set_available_update_version(None);\n            diagnostics::set_update_installing(false);\n            self.manual_install_requested = false;",
+              "            diagnostics::set_available_update_version(None);\n            diagnostics::set_update_waiting_for_slot(false, None);\n            diagnostics::set_update_installing(false);\n            self.manual_install_requested = false;",
+          )
+
+          replace_once(
+              "src/desktop/versioned_view.rs",
+              "    runtime.available_update_version.is_some()\n        && !runtime.update_installing\n        && update_button_rect(layout).contains(x, y)",
+              "    runtime.available_update_version.is_some()\n        && !runtime.update_installing\n        && !runtime.update_waiting_for_slot\n        && update_button_rect(layout).contains(x, y)",
+          )
+
+          replace_once(
+              "src/desktop/versioned_view.rs",
+              "    let (background, border, text_color, label) = if runtime.update_installing {\n        (\n            theme::SURFACE_RAISED,\n            theme::LINE_STRONG,\n            theme::TEXT_MUTED,\n            \"ОБНОВЛЕНИЕ...\".to_owned(),\n        )\n    } else {",
+              "    let (background, border, text_color, label) = if runtime.update_installing {\n        (\n            theme::SURFACE_RAISED,\n            theme::LINE_STRONG,\n            theme::TEXT_MUTED,\n            \"УСТАНОВКА...\".to_owned(),\n        )\n    } else if runtime.update_waiting_for_slot {\n        (\n            theme::SURFACE_RAISED,\n            theme::LINE_STRONG,\n            theme::TEXT_MUTED,\n            \"ОЖИДАНИЕ СЛОТА...\".to_owned(),\n        )\n    } else {",
+          )
+
+          replace_once(
+              "src/desktop/versioned_view.rs",
+              "        runtime.update_installing = true;\n        assert!(!update_button_contains(layout, &runtime, x, y));",
+              "        runtime.update_waiting_for_slot = true;\n        assert!(!update_button_contains(layout, &runtime, x, y));\n\n        runtime.update_waiting_for_slot = false;\n        runtime.update_installing = true;\n        assert!(!update_button_contains(layout, &runtime, x, y));",
+          )
+          PY
+
+      - name: Format and test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt
+          cargo test
+          git diff --check
+
+      - name: Commit fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/diagnostics.rs src/update/coordinator.rs src/desktop/versioned_view.rs
+          git commit -m "Fix deferred manual update state"
+          git push origin HEAD:fix/update-slot-state
