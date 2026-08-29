@@ -107,7 +107,7 @@ impl UpdateCoordinator {
             return Ok(None);
         };
 
-        if !manual_install && Instant::now() < pending.ready_at {
+        if Instant::now() < pending.ready_at {
             return Ok(None);
         }
 
@@ -126,9 +126,20 @@ impl UpdateCoordinator {
                     .expect("pending collector update disappeared")
                     .ready_at = Instant::now() + retry_delay;
 
+                diagnostics::set_update_waiting_for_slot(true, Some(retry_delay.as_secs()));
+                diagnostics::info(
+                    "update",
+                    format!(
+                        "Update slot is busy; retrying in {} second(s)",
+                        retry_delay.as_secs()
+                    ),
+                );
+
                 return Ok(None);
             }
 
+            diagnostics::set_update_waiting_for_slot(false, None);
+            diagnostics::set_update_installing(true);
             realtime.pause().await?;
         } else if !manual_install {
             return Ok(None);
@@ -141,6 +152,7 @@ impl UpdateCoordinator {
 
         self.manual_install_requested = false;
         diagnostics::set_available_update_version(None);
+        diagnostics::set_update_waiting_for_slot(false, None);
         diagnostics::set_update_installing(true);
 
         Ok(Some(UpdateHandoffRequest { pending }))
@@ -149,6 +161,7 @@ impl UpdateCoordinator {
     pub fn restore_handoff(&mut self, mut request: UpdateHandoffRequest) {
         request.pending.ready_at = Instant::now() + UPDATE_ERROR_RETRY_DELAY;
         diagnostics::set_available_update_version(Some(request.version().to_string()));
+        diagnostics::set_update_waiting_for_slot(false, None);
         diagnostics::set_update_installing(false);
         self.pending = Some(request.pending);
     }
@@ -156,6 +169,7 @@ impl UpdateCoordinator {
     pub fn defer_after_error(&mut self) {
         let retry_at = Instant::now() + UPDATE_ERROR_RETRY_DELAY;
 
+        diagnostics::set_update_waiting_for_slot(false, None);
         diagnostics::set_update_installing(false);
         self.manual_install_requested = false;
 
@@ -175,6 +189,7 @@ impl UpdateCoordinator {
 
         let Some(candidate) = self.release_client.check(self.current_version).await? else {
             diagnostics::set_available_update_version(None);
+            diagnostics::set_update_waiting_for_slot(false, None);
             diagnostics::set_update_installing(false);
             self.manual_install_requested = false;
             return Ok(());

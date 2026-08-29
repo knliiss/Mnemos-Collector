@@ -41,6 +41,7 @@ pub(super) fn update_button_contains(
 ) -> bool {
     runtime.available_update_version.is_some()
         && !runtime.update_installing
+        && !runtime.update_waiting_for_slot
         && update_button_rect(layout).contains(x, y)
 }
 
@@ -222,7 +223,14 @@ unsafe fn draw_update_button(
             theme::SURFACE_RAISED,
             theme::LINE_STRONG,
             theme::TEXT_MUTED,
-            "ОБНОВЛЕНИЕ...".to_owned(),
+            "УСТАНОВКА...".to_owned(),
+        )
+    } else if runtime.update_waiting_for_slot {
+        (
+            theme::SURFACE_RAISED,
+            theme::LINE_STRONG,
+            theme::TEXT_MUTED,
+            "ОЖИДАНИЕ СЛОТА...".to_owned(),
         )
     } else {
         (
@@ -366,6 +374,10 @@ mod tests {
         runtime.available_update_version = Some("0.1.4".to_owned());
         assert!(update_button_contains(layout, &runtime, x, y));
 
+        runtime.update_waiting_for_slot = true;
+        assert!(!update_button_contains(layout, &runtime, x, y));
+
+        runtime.update_waiting_for_slot = false;
         runtime.update_installing = true;
         assert!(!update_button_contains(layout, &runtime, x, y));
     }

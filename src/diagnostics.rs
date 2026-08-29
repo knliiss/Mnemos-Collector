@@ -41,6 +41,8 @@ pub struct RuntimeSnapshot {
     pub available_update_version: Option<String>,
     pub required_update_version: Option<String>,
     pub update_installing: bool,
+    pub update_waiting_for_slot: bool,
+    pub update_retry_after_seconds: Option<u64>,
     pub installation_mode: InstallationMode,
     pub spool_pending: usize,
     pub spool_capacity: usize,
@@ -164,6 +166,11 @@ pub fn diagnostic_report() -> String {
         .unwrap_or_else(|| "not found".to_owned());
     let update_state = if runtime.update_installing {
         "installing".to_owned()
+    } else if runtime.update_waiting_for_slot {
+        match runtime.update_retry_after_seconds {
+            Some(seconds) => format!("waiting for update slot; retry in {seconds}s"),
+            None => "waiting for update slot".to_owned(),
+        }
     } else if let Some(required) = runtime.required_update_version.as_deref() {
         format!("required >= {required}")
     } else if let Some(available) = runtime.available_update_version.as_deref() {
@@ -347,7 +354,7 @@ pub fn request_update_install() {
     diagnostics
         .update_install_requested
         .store(true, Ordering::Release);
-    set_update_installing(true);
+    set_update_waiting_for_slot(true, None);
     info("update", "Manual update requested from desktop UI");
 }
 
@@ -358,7 +365,25 @@ pub fn take_update_install_request() -> bool {
 }
 
 pub fn set_update_installing(installing: bool) {
-    update_runtime(|runtime| runtime.update_installing = installing);
+    update_runtime(|runtime| {
+        runtime.update_installing = installing;
+
+        if installing {
+            runtime.update_waiting_for_slot = false;
+            runtime.update_retry_after_seconds = None;
+        }
+    });
+}
+
+pub fn set_update_waiting_for_slot(waiting: bool, retry_after_seconds: Option<u64>) {
+    update_runtime(|runtime| {
+        runtime.update_waiting_for_slot = waiting;
+        runtime.update_retry_after_seconds = waiting.then_some(retry_after_seconds).flatten();
+
+        if waiting {
+            runtime.update_installing = false;
+        }
+    });
 }
 
 pub fn clear_last_error() {
