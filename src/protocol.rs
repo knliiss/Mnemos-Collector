@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub const COLLECTOR_PROTOCOL_VERSION: u16 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ItemType {
@@ -139,5 +141,31 @@ impl CollectorUpdateReadyMessage {
             message_type: "COLLECTOR_UPDATE_READY",
             version: version.to_owned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_report_preserves_camel_case_wire_fields() {
+        let message_id = Uuid::now_v7();
+        let observed_at = Utc::now();
+        let report = EventReport::with_message_id(
+            message_id,
+            CollectorEvent::Global {
+                event_type: GlobalEventType::Moon,
+            },
+            observed_at,
+        );
+        let json = serde_json::to_value(report).unwrap();
+
+        assert_eq!(json["type"], "EVENT_REPORT");
+        assert_eq!(json["messageId"], message_id.to_string());
+        assert!(json.get("observedAt").is_some());
+        assert!(json.get("observed_at").is_none());
+        assert_eq!(json["event"]["kind"], "GLOBAL");
+        assert_eq!(json["event"]["eventType"], "MOON");
     }
 }

@@ -13,11 +13,28 @@ pub enum TransportErrorCode {
     TooManyInFlight,
     NotObserving,
     DeliveryUnavailable,
+    UnsupportedProtocol,
+    UpgradeRequired,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
 pub enum ServerMessage {
+    #[serde(rename = "WELCOME")]
+    Welcome {
+        #[serde(rename = "protocolVersion")]
+        protocol_version: u16,
+        #[serde(rename = "minimumCollectorVersion")]
+        minimum_collector_version: Option<String>,
+    },
+    #[serde(rename = "UPGRADE_REQUIRED")]
+    UpgradeRequired {
+        #[serde(rename = "minimumVersion")]
+        minimum_version: String,
+        message: Option<String>,
+    },
     #[serde(rename = "REPORT_QUEUED")]
     ReportQueued {
         #[serde(rename = "messageId")]

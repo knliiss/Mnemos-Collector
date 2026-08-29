@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use mnemos_collector::desktop::{self, DesktopLaunchContext};
-use mnemos_collector::diagnostics;
+use mnemos_collector::diagnostics::{self, InstallationMode};
 use mnemos_collector::launch::LaunchArguments;
 use mnemos_collector::platform::{Autostart, Installation};
 use mnemos_collector::provisioning::{ProvisioningClient, default_device_name};
@@ -67,6 +67,12 @@ async fn run() -> Result<()> {
 
     let current_installation = Installation::is_current_installation()
         .context("failed to verify collector installation location")?;
+
+    diagnostics::set_installation_mode(if current_installation {
+        InstallationMode::Stable
+    } else {
+        InstallationMode::External
+    });
 
     if arguments.activation_token.is_some() && !current_installation {
         bail!(

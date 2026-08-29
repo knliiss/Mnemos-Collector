@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -11,20 +12,25 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::HeaderMap;
 use tokio_tungstenite::tungstenite::http::header::{AUTHORIZATION, HeaderName, HeaderValue};
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
+use crate::diagnostics;
 use crate::protocol::{
-    CollectorStateMessage, CollectorUpdateReadyMessage, EventReport, ObservationState,
+    COLLECTOR_PROTOCOL_VERSION, CollectorStateMessage, CollectorUpdateReadyMessage, EventReport,
+    ObservationState,
 };
 use crate::realtime::response::ServerMessage;
-
-pub const COLLECTOR_PROTOCOL_VERSION: u16 = 1;
+use crate::update::CollectorVersion;
 
 const VERSION_HEADER: HeaderName = HeaderName::from_static("x-mnemos-collector-version");
 const PROTOCOL_HEADER: HeaderName = HeaderName::from_static("x-mnemos-collector-protocol");
 const PLATFORM_HEADER: HeaderName = HeaderName::from_static("x-mnemos-collector-platform");
+const SERVER_PROTOCOL_HEADER: HeaderName = HeaderName::from_static("x-mnemos-server-protocol");
+const MINIMUM_VERSION_HEADER: HeaderName =
+    HeaderName::from_static("x-mnemos-minimum-collector-version");
 const INBOUND_BUFFER: usize = 32;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -92,9 +98,13 @@ impl RealtimeClient {
         request.headers_mut().insert(PROTOCOL_HEADER, protocol);
         request.headers_mut().insert(PLATFORM_HEADER, platform);
 
-        let (socket, _) = connect_async(request)
+        let (socket, response) = connect_async(request)
             .await
             .context("failed to connect to Mnemos realtime-service")?;
+
+        validate_handshake_headers(response.headers())?;
+        diagnostics::mark_realtime_activity();
+
         let (writer, reader) = socket.split();
         let writer = Arc::new(Mutex::new(writer));
         let alive = Arc::new(AtomicBool::new(true));
@@ -252,10 +262,33 @@ impl RealtimeClient {
     }
 
     async fn next_server_message(&mut self) -> Result<ServerMessage> {
-        match self.inbound.recv().await {
-            Some(InboundEvent::Message(message)) => Ok(message),
-            Some(InboundEvent::Failed(message)) => bail!("realtime WebSocket failed: {message}"),
-            None => bail!("realtime WebSocket reader stopped"),
+        loop {
+            let message = match self.inbound.recv().await {
+                Some(InboundEvent::Message(message)) => message,
+                Some(InboundEvent::Failed(message)) => {
+                    bail!("realtime WebSocket failed: {message}")
+                }
+                None => bail!("realtime WebSocket reader stopped"),
+            };
+
+            match message {
+                ServerMessage::Welcome {
+                    protocol_version,
+                    minimum_collector_version,
+                } => {
+                    validate_server_compatibility(
+                        protocol_version,
+                        minimum_collector_version.as_deref(),
+                    )?;
+                }
+                ServerMessage::UpgradeRequired {
+                    minimum_version,
+                    message,
+                } => {
+                    require_collector_upgrade(&minimum_version, message.as_deref())?;
+                }
+                message => return Ok(message),
+            }
         }
     }
 }
@@ -265,6 +298,100 @@ impl Drop for RealtimeClient {
         self.alive.store(false, Ordering::Release);
         self.reader_task.abort();
     }
+}
+
+fn validate_handshake_headers(headers: &HeaderMap) -> Result<()> {
+    let server_protocol = optional_header_u16(headers, &SERVER_PROTOCOL_HEADER)?;
+    let minimum_version = optional_header_text(headers, &MINIMUM_VERSION_HEADER)?;
+
+    if let Some(server_protocol) = server_protocol {
+        validate_server_compatibility(server_protocol, minimum_version.as_deref())?;
+    } else if let Some(minimum_version) = minimum_version.as_deref() {
+        validate_minimum_version(minimum_version)?;
+        diagnostics::set_protocol_versions(COLLECTOR_PROTOCOL_VERSION, None);
+    } else {
+        diagnostics::set_protocol_versions(COLLECTOR_PROTOCOL_VERSION, None);
+    }
+
+    Ok(())
+}
+
+fn validate_server_compatibility(
+    server_protocol: u16,
+    minimum_collector_version: Option<&str>,
+) -> Result<()> {
+    diagnostics::set_protocol_versions(COLLECTOR_PROTOCOL_VERSION, Some(server_protocol));
+
+    if let Some(minimum_version) = minimum_collector_version {
+        validate_minimum_version(minimum_version)?;
+    } else {
+        diagnostics::set_required_update_version(None);
+    }
+
+    if server_protocol != COLLECTOR_PROTOCOL_VERSION {
+        bail!(
+            "realtime-service protocol {server_protocol} is incompatible with collector protocol {COLLECTOR_PROTOCOL_VERSION}"
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_minimum_version(minimum_version: &str) -> Result<()> {
+    let minimum = CollectorVersion::from_str(minimum_version)
+        .context("realtime-service returned an invalid minimum collector version")?;
+    let current = CollectorVersion::from_str(env!("CARGO_PKG_VERSION"))
+        .context("running collector version is invalid")?;
+
+    if current < minimum {
+        diagnostics::set_required_update_version(Some(minimum.to_string()));
+        bail!("collector {current} must be upgraded to {minimum} or newer before reconnecting");
+    }
+
+    diagnostics::set_required_update_version(None);
+
+    Ok(())
+}
+
+fn require_collector_upgrade(minimum_version: &str, message: Option<&str>) -> Result<()> {
+    let minimum = CollectorVersion::from_str(minimum_version)
+        .context("realtime-service returned an invalid required collector version")?;
+    let current = CollectorVersion::from_str(env!("CARGO_PKG_VERSION"))
+        .context("running collector version is invalid")?;
+
+    diagnostics::set_required_update_version(Some(minimum.to_string()));
+
+    if let Some(message) = message.filter(|message| !message.trim().is_empty()) {
+        bail!("collector {current} must be upgraded to {minimum} or newer: {message}");
+    }
+
+    bail!("collector {current} must be upgraded to {minimum} or newer")
+}
+
+fn optional_header_text(headers: &HeaderMap, name: &HeaderName) -> Result<Option<String>> {
+    let Some(value) = headers.get(name) else {
+        return Ok(None);
+    };
+
+    Ok(Some(
+        value
+            .to_str()
+            .with_context(|| format!("{} response header is not valid text", name.as_str()))?
+            .trim()
+            .to_owned(),
+    ))
+}
+
+fn optional_header_u16(headers: &HeaderMap, name: &HeaderName) -> Result<Option<u16>> {
+    let Some(value) = optional_header_text(headers, name)? else {
+        return Ok(None);
+    };
+
+    let parsed = value
+        .parse::<u16>()
+        .with_context(|| format!("{} response header is not a protocol number", name.as_str()))?;
+
+    Ok(Some(parsed))
 }
 
 async fn read_loop(
@@ -288,6 +415,8 @@ async fn read_loop(
 
                 match parsed {
                     Ok(message) => {
+                        diagnostics::mark_realtime_activity();
+
                         if inbound.send(InboundEvent::Message(message)).await.is_err() {
                             break;
                         }
@@ -303,6 +432,7 @@ async fn read_loop(
                 }
             }
             Message::Ping(payload) => {
+                diagnostics::mark_realtime_activity();
                 let result = writer.lock().await.send(Message::Pong(payload)).await;
 
                 if let Err(error) = result {
@@ -310,6 +440,7 @@ async fn read_loop(
                     break;
                 }
             }
+            Message::Pong(_) => diagnostics::mark_realtime_activity(),
             Message::Close(frame) => {
                 send_failure(
                     &inbound,
@@ -318,7 +449,7 @@ async fn read_loop(
                 .await;
                 break;
             }
-            Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {}
+            Message::Binary(_) | Message::Frame(_) => {}
         }
     }
 
@@ -327,4 +458,31 @@ async fn read_loop(
 
 async fn send_failure(inbound: &mpsc::Sender<InboundEvent>, message: String) {
     let _ = inbound.send(InboundEvent::Failed(message)).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_missing_optional_compatibility_headers() {
+        let headers = HeaderMap::new();
+
+        assert!(validate_handshake_headers(&headers).is_ok());
+    }
+
+    #[test]
+    fn accepts_matching_server_protocol() {
+        assert!(validate_server_compatibility(COLLECTOR_PROTOCOL_VERSION, None).is_ok());
+    }
+
+    #[test]
+    fn rejects_mismatched_server_protocol() {
+        assert!(validate_server_compatibility(COLLECTOR_PROTOCOL_VERSION + 1, None).is_err());
+    }
+
+    #[test]
+    fn rejects_future_minimum_collector_version() {
+        assert!(require_collector_upgrade("999.0.0", Some("protocol migration")).is_err());
+    }
 }
