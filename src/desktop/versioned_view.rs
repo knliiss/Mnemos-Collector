@@ -123,15 +123,7 @@ unsafe fn draw_update_button(
     let previous_pen = unsafe { SelectObject(hdc, pen) };
 
     unsafe {
-        RoundRect(
-            hdc,
-            rect.left,
-            rect.top,
-            rect.right,
-            rect.bottom,
-            18,
-            18,
-        );
+        RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, 18, 18);
         SelectObject(hdc, previous_pen);
         SelectObject(hdc, previous_brush);
         DeleteObject(pen);
