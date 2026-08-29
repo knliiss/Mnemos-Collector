@@ -899,6 +899,14 @@ impl DesktopWindow {
             return;
         }
 
+        let runtime = diagnostics::runtime_snapshot();
+
+        if view::update_button_contains(layout, &runtime, x, y) {
+            diagnostics::request_update_install();
+            self.invalidate(hwnd);
+            return;
+        }
+
         match view::interactive_element_at(layout, self.provisioned, x, y) {
             Some(InteractiveElement::WindowClose) => unsafe {
                 ShowWindow(hwnd, SW_HIDE);
