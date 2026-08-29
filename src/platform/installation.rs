@@ -101,14 +101,19 @@ fn ensure_installed(target: &Path, stop_existing_instance: bool) -> Result<()> {
     if target.exists() {
         validate_existing_installation(target)?;
 
-        if let Some(installed_version) = read_version_marker(target)?
-            && installed_version >= current_version
-        {
+        if installed_version_allows_reuse(read_version_marker(target)?, current_version) {
             return Ok(());
         }
     }
 
     install_current_executable(&current, target, current_version, stop_existing_instance)
+}
+
+fn installed_version_allows_reuse(
+    installed_version: Option<CollectorVersion>,
+    current_version: CollectorVersion,
+) -> bool {
+    installed_version.is_some_and(|installed_version| installed_version >= current_version)
 }
 
 fn install_current_executable(
@@ -391,5 +396,103 @@ mod tests {
         assert_eq!(second.parent(), target.parent());
         assert_ne!(first, second);
         assert!(first.to_string_lossy().contains(".install-"));
+    }
+
+    #[test]
+    fn legacy_install_without_version_marker_requires_replacement() {
+        let current = CollectorVersion::new(0, 1, 6);
+
+        assert!(!installed_version_allows_reuse(None, current));
+    }
+
+    #[test]
+    fn known_newer_installation_is_never_downgraded() {
+        let current = CollectorVersion::new(0, 1, 6);
+        let installed = CollectorVersion::new(0, 2, 0);
+
+        assert!(installed_version_allows_reuse(Some(installed), current));
+    }
+
+    #[test]
+    fn legacy_installation_is_replaced_and_versioned() {
+        let directory = test_directory("legacy-replacement");
+        let source = directory.join("new-collector.exe");
+        let target = directory.join("mnemos-collector.exe");
+        let version = CollectorVersion::new(0, 1, 6);
+
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(&source, b"new-collector").unwrap();
+        fs::write(&target, b"old-collector").unwrap();
+
+        install_current_executable(&source, &target, version, false).unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"new-collector");
+        assert_eq!(read_version_marker(&target).unwrap(), Some(version));
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn failed_replacement_activation_restores_previous_executable() {
+        let directory = test_directory("replacement-rollback");
+        let target = directory.join("mnemos-collector.exe");
+        let missing_replacement = directory.join("missing-replacement.exe");
+
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(&target, b"previous-version").unwrap();
+
+        let result = replace_existing_installation(&missing_replacement, &target, false);
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"previous-version");
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn running_executable_replacement_waits_for_file_unlock() {
+        if std::env::var_os("MNEMOS_REPLACEMENT_LOCK_HELPER").is_some() {
+            return;
+        }
+
+        let directory = test_directory("running-replacement");
+        let target = directory.join("mnemos-collector-test.exe");
+        let backup = directory.join("mnemos-collector-test.previous.exe");
+        let test_executable = std::env::current_exe().unwrap();
+
+        fs::create_dir_all(&directory).unwrap();
+        fs::copy(test_executable, &target).unwrap();
+
+        let mut child = Command::new(&target)
+            .arg("replacement_lock_helper")
+            .arg("--nocapture")
+            .env("MNEMOS_REPLACEMENT_LOCK_HELPER", "1")
+            .spawn()
+            .unwrap();
+
+        std::thread::sleep(Duration::from_millis(150));
+
+        move_existing_to_backup(&target, &backup, true).unwrap();
+
+        assert!(backup.exists());
+        assert!(!target.exists());
+        assert!(child.wait().unwrap().success());
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replacement_lock_helper() {
+        if std::env::var_os("MNEMOS_REPLACEMENT_LOCK_HELPER").is_none() {
+            return;
+        }
+
+        std::thread::sleep(Duration::from_millis(600));
+    }
+
+    fn test_directory(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("mnemos-install-{name}-{}", Uuid::now_v7()))
     }
 }
