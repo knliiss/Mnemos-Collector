@@ -18,6 +18,7 @@ const UPDATE_BUTTON_WIDTH: i32 = 184;
 const UPDATE_BUTTON_GAP: i32 = 10;
 const DIAGNOSTICS_LEFT_OFFSET: i32 = 178;
 const DIAGNOSTICS_RIGHT_GAP: i32 = 8;
+const APPROXIMATE_UI_CHAR_WIDTH: i32 = 7;
 
 pub(super) fn layout(width: i32, height: i32, provisioned: bool) -> Layout {
     base_view::layout(width, height, provisioned)
@@ -167,6 +168,20 @@ fn age_compact(timestamp: Option<chrono::DateTime<Utc>>) -> String {
     }
 }
 
+fn truncate_summary(value: &str, available_width: i32) -> String {
+    let max_chars = (available_width / APPROXIMATE_UI_CHAR_WIDTH).max(4) as usize;
+    let count = value.chars().count();
+
+    if count <= max_chars {
+        return value.to_owned();
+    }
+
+    let keep = max_chars.saturating_sub(1);
+    let mut truncated = value.chars().take(keep).collect::<String>();
+    truncated.push('…');
+    truncated
+}
+
 unsafe fn draw_diagnostics_summary(
     hdc: *mut c_void,
     runtime: &RuntimeSnapshot,
@@ -179,11 +194,13 @@ unsafe fn draw_diagnostics_summary(
         return;
     }
 
+    let summary = truncate_summary(&diagnostics_summary(runtime), rect.width());
+
     unsafe {
-        draw_clipped_text(
+        draw_left_text(
             hdc,
             rect,
-            &diagnostics_summary(runtime),
+            &summary,
             font,
             diagnostics_summary_color(runtime),
         );
@@ -256,47 +273,29 @@ unsafe fn draw_centered_text(
     }
 }
 
-unsafe fn draw_clipped_text(
+unsafe fn draw_left_text(
     hdc: *mut c_void,
     rect: UiRect,
     value: &str,
     font: *mut c_void,
     color: u32,
 ) {
-    let mut rendered = value.to_owned();
+    let text = value.encode_utf16().collect::<Vec<_>>();
     let previous_font = unsafe { SelectObject(hdc, font) };
     let mut size = SIZE { cx: 0, cy: 0 };
 
-    loop {
-        let text = rendered.encode_utf16().collect::<Vec<_>>();
-
-        unsafe {
-            GetTextExtentPoint32W(hdc, text.as_ptr(), text.len() as i32, &mut size);
-        }
-
-        if size.cx <= rect.width() || rendered.chars().count() <= 4 {
-            unsafe {
-                SetTextColor(hdc, color);
-                SetBkMode(hdc, 1);
-                TextOutW(
-                    hdc,
-                    rect.left,
-                    rect.top + (rect.height() - size.cy) / 2,
-                    text.as_ptr(),
-                    text.len() as i32,
-                );
-                SelectObject(hdc, previous_font);
-            }
-            return;
-        }
-
-        rendered.pop();
-
-        while !rendered.is_char_boundary(rendered.len()) {
-            rendered.pop();
-        }
-
-        rendered = format!("{}…", rendered.trim_end_matches('…'));
+    unsafe {
+        GetTextExtentPoint32W(hdc, text.as_ptr(), text.len() as i32, &mut size);
+        SetTextColor(hdc, color);
+        SetBkMode(hdc, 1);
+        TextOutW(
+            hdc,
+            rect.left,
+            rect.top + (rect.height() - size.cy) / 2,
+            text.as_ptr(),
+            text.len() as i32,
+        );
+        SelectObject(hdc, previous_font);
     }
 }
 
@@ -325,7 +324,7 @@ mod tests {
     use crate::diagnostics::RuntimeSnapshot;
 
     use super::{
-        COLLECTOR_VERSION, diagnostics_summary, layout, update_button_contains,
+        COLLECTOR_VERSION, diagnostics_summary, layout, truncate_summary, update_button_contains,
         update_button_rect,
     };
 
@@ -397,5 +396,13 @@ mod tests {
             diagnostics_summary(&runtime),
             "ТРЕБУЕТСЯ ОБНОВЛЕНИЕ ДО v0.2.0"
         );
+    }
+
+    #[test]
+    fn diagnostics_summary_truncation_is_bounded() {
+        let truncated = truncate_summary("abcdefghijklmnopqrstuvwxyz", 42);
+
+        assert_eq!(truncated.chars().count(), 6);
+        assert!(truncated.ends_with('…'));
     }
 }
