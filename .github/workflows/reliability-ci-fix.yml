@@ -25,39 +25,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
 
-          diagnostics = Path("src/diagnostics.rs")
-          text = diagnostics.read_text()
+          sed -i 's/line\.as_bytes()\.len()/line.len()/' src/diagnostics.rs
 
-          old = 'let line_bytes = line.as_bytes().len() as u64 + 1;'
-          assert text.count(old) == 1
-          text = text.replace(old, 'let line_bytes = line.len() as u64 + 1;')
+          perl -0pi -e 's/\n            if runtime\.available_update_version\.is_none\(\) \{\n                runtime\.available_update_version = Some\(version\.clone\(\)\);\n            \}\n//s' src/diagnostics.rs
 
-          old = '''            if runtime.available_update_version.is_none() {
-                runtime.available_update_version = Some(version.clone());
-            }
+          perl -0pi -e 's/        diagnostics::set_protocol_versions\(COLLECTOR_PROTOCOL_VERSION, None\);\n        diagnostics::set_required_update_version\(None\);/        diagnostics::set_protocol_versions(COLLECTOR_PROTOCOL_VERSION, None);/s' src/realtime/client.rs
 
-'''
-          assert text.count(old) == 1
-          text = text.replace(old, '')
-          diagnostics.write_text(text)
-
-          realtime = Path("src/realtime/client.rs")
-          text = realtime.read_text()
-          old = '''    } else {
-        diagnostics::set_protocol_versions(COLLECTOR_PROTOCOL_VERSION, None);
-        diagnostics::set_required_update_version(None);
-    }
-'''
-          new = '''    } else {
-        diagnostics::set_protocol_versions(COLLECTOR_PROTOCOL_VERSION, None);
-    }
-'''
-          assert text.count(old) == 1
-          realtime.write_text(text.replace(old, new))
-          PY
+          grep -Fq 'let line_bytes = line.len() as u64 + 1;' src/diagnostics.rs
+          ! grep -Fq 'runtime.available_update_version = Some(version.clone());' src/diagnostics.rs
+          ! grep -A1 -F 'set_protocol_versions(COLLECTOR_PROTOCOL_VERSION, None);' src/realtime/client.rs | grep -Fq 'set_required_update_version(None);'
 
       - name: Install Rust formatter
         run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt
