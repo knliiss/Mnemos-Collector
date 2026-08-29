@@ -18,12 +18,15 @@ pub struct RuntimeSnapshot {
     pub observing: bool,
     pub log_path: Option<PathBuf>,
     pub last_error: Option<String>,
+    pub available_update_version: Option<String>,
+    pub update_installing: bool,
 }
 
 struct Diagnostics {
     lines: Mutex<VecDeque<String>>,
     file: Mutex<Option<File>>,
     debug_enabled: AtomicBool,
+    update_install_requested: AtomicBool,
     runtime: RwLock<RuntimeSnapshot>,
     log_file_path: Option<PathBuf>,
 }
@@ -142,6 +145,40 @@ pub fn set_log_path(path: Option<PathBuf>) {
     update_runtime(|runtime| runtime.log_path = path);
 }
 
+pub fn set_available_update_version(version: Option<String>) {
+    update_runtime(|runtime| runtime.available_update_version = version);
+}
+
+pub fn request_update_install() {
+    let diagnostics = diagnostics();
+    let update_available = diagnostics
+        .runtime
+        .read()
+        .expect("diagnostics runtime lock poisoned")
+        .available_update_version
+        .is_some();
+
+    if !update_available {
+        return;
+    }
+
+    diagnostics
+        .update_install_requested
+        .store(true, Ordering::Release);
+    set_update_installing(true);
+    info("update", "Manual update requested from desktop UI");
+}
+
+pub fn take_update_install_request() -> bool {
+    diagnostics()
+        .update_install_requested
+        .swap(false, Ordering::AcqRel)
+}
+
+pub fn set_update_installing(installing: bool) {
+    update_runtime(|runtime| runtime.update_installing = installing);
+}
+
 pub fn clear_last_error() {
     update_runtime(|runtime| runtime.last_error = None);
 }
@@ -168,6 +205,7 @@ impl Diagnostics {
             lines: Mutex::new(VecDeque::with_capacity(MAX_VISIBLE_LOG_LINES)),
             file: Mutex::new(file),
             debug_enabled: AtomicBool::new(true),
+            update_install_requested: AtomicBool::new(false),
             runtime: RwLock::new(RuntimeSnapshot {
                 game_mode: "Unknown".to_owned(),
                 ..RuntimeSnapshot::default()
