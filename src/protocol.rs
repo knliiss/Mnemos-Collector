@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+pub const COLLECTOR_PROTOCOL_VERSION: u16 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ItemType {
@@ -79,7 +81,6 @@ pub struct EventReport {
     pub message_type: &'static str,
     #[serde(rename = "messageId")]
     pub message_id: Uuid,
-    #[serde(rename = "observedAt")]
     pub observed_at: DateTime<Utc>,
     pub event: CollectorEvent,
 }
