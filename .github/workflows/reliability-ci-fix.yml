@@ -1,0 +1,73 @@
+name: Reliability CI Fix
+
+on:
+  push:
+    branches:
+      - feat/collector-reliability-diagnostics
+    paths:
+      - ".github/workflows/reliability-ci-fix.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v7
+        with:
+          ref: feat/collector-reliability-diagnostics
+          fetch-depth: 0
+
+      - name: Apply exact reliability fixes
+        shell: python
+        run: |
+          from pathlib import Path
+
+          diagnostics = Path("src/diagnostics.rs")
+          text = diagnostics.read_text()
+
+          old = 'let line_bytes = line.as_bytes().len() as u64 + 1;'
+          assert text.count(old) == 1
+          text = text.replace(old, 'let line_bytes = line.len() as u64 + 1;')
+
+          old = '''            if runtime.available_update_version.is_none() {
+                runtime.available_update_version = Some(version.clone());
+            }
+
+'''
+          assert text.count(old) == 1
+          text = text.replace(old, '')
+          diagnostics.write_text(text)
+
+          realtime = Path("src/realtime/client.rs")
+          text = realtime.read_text()
+          old = '''    } else {
+        diagnostics::set_protocol_versions(COLLECTOR_PROTOCOL_VERSION, None);
+        diagnostics::set_required_update_version(None);
+    }
+'''
+          new = '''    } else {
+        diagnostics::set_protocol_versions(COLLECTOR_PROTOCOL_VERSION, None);
+    }
+'''
+          assert text.count(old) == 1
+          realtime.write_text(text.replace(old, new))
+
+      - name: Install Rust formatter
+        run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt
+
+      - name: Format Rust sources
+        run: cargo +1.98.0 fmt --all
+
+      - name: Commit fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/diagnostics.rs src/realtime/client.rs
+          git commit -m "Address reliability CI findings"
+          git push origin HEAD:feat/collector-reliability-diagnostics
