@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
@@ -9,6 +9,7 @@ use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
+use crate::diagnostics;
 use crate::protocol::{CollectorEvent, EventReport};
 
 const SPOOL_FILE_NAME: &str = "pending-reports.json";
@@ -43,6 +44,13 @@ pub struct ReportSpool {
     reports: VecDeque<PendingReport>,
 }
 
+#[derive(Debug)]
+struct LoadedSnapshot {
+    reports: VecDeque<PendingReport>,
+    recovered: bool,
+    invalid_candidates: Vec<PathBuf>,
+}
+
 impl ReportSpool {
     pub async fn open_default() -> Result<Self> {
         let project_dirs = ProjectDirs::from("rest", "knalis", "Mnemos Collector")
@@ -58,21 +66,38 @@ impl ReportSpool {
         }
 
         let path = path.into();
-        let reports = load_snapshot(&path).await?;
+        let loaded = load_snapshot(&path).await?;
 
-        if reports.len() > capacity {
+        if loaded.reports.len() > capacity {
             bail!(
                 "report spool contains {} entries but capacity is {}",
-                reports.len(),
+                loaded.reports.len(),
                 capacity
             );
         }
 
-        Ok(Self {
+        if !loaded.invalid_candidates.is_empty() {
+            quarantine_corrupted_snapshots(&loaded.invalid_candidates).await?;
+        }
+
+        let spool = Self {
             path,
             capacity,
-            reports,
-        })
+            reports: loaded.reports,
+        };
+
+        diagnostics::set_spool_recovered(loaded.recovered);
+        spool.publish_state();
+
+        if loaded.recovered {
+            diagnostics::warn(
+                "spool",
+                "Report spool recovered from a backup or corrupted snapshot; unreadable files were quarantined for diagnostics",
+            );
+            spool.persist().await?;
+        }
+
+        Ok(spool)
     }
 
     pub fn len(&self) -> usize {
@@ -89,6 +114,14 @@ impl ReportSpool {
 
     pub async fn enqueue(&mut self, report: PendingReport) -> Result<()> {
         if self.reports.len() >= self.capacity {
+            diagnostics::error(
+                "spool",
+                format!(
+                    "Reliable report spool is full at {}/{}; refusing to drop an unacknowledged event",
+                    self.reports.len(),
+                    self.capacity
+                ),
+            );
             bail!("report spool is full; refusing to drop an unacknowledged event");
         }
 
@@ -96,8 +129,11 @@ impl ReportSpool {
 
         if let Err(error) = self.persist().await {
             self.reports.pop_back();
+            self.publish_state();
             return Err(error);
         }
+
+        self.publish_state();
 
         Ok(())
     }
@@ -121,8 +157,11 @@ impl ReportSpool {
 
         if let Err(error) = self.persist().await {
             self.reports.push_front(acknowledged);
+            self.publish_state();
             return Err(error);
         }
+
+        self.publish_state();
 
         Ok(())
     }
@@ -170,14 +209,22 @@ impl ReportSpool {
 
         Ok(())
     }
+
+    fn publish_state(&self) {
+        diagnostics::set_spool_state(
+            self.reports.len(),
+            self.capacity,
+            self.reports.front().map(|report| report.observed_at),
+        );
+    }
 }
 
-async fn load_snapshot(path: &Path) -> Result<VecDeque<PendingReport>> {
+async fn load_snapshot(path: &Path) -> Result<LoadedSnapshot> {
     let candidates = [path.to_path_buf(), temporary_path(path), backup_path(path)];
     let mut found_snapshot = false;
-    let mut last_error = None;
+    let mut invalid_candidates = Vec::new();
 
-    for candidate in candidates {
+    for (index, candidate) in candidates.into_iter().enumerate() {
         if !fs::try_exists(&candidate).await? {
             continue;
         }
@@ -189,26 +236,63 @@ async fn load_snapshot(path: &Path) -> Result<VecDeque<PendingReport>> {
             .with_context(|| format!("failed to read {}", candidate.display()))?;
 
         match serde_json::from_slice(&content) {
-            Ok(reports) => return Ok(reports),
-            Err(error) => {
-                last_error = Some((candidate, error));
+            Ok(reports) => {
+                return Ok(LoadedSnapshot {
+                    reports,
+                    recovered: index != 0 || !invalid_candidates.is_empty(),
+                    invalid_candidates,
+                });
             }
+            Err(_) => invalid_candidates.push(candidate),
         }
     }
 
     if !found_snapshot {
-        return Ok(VecDeque::new());
+        return Ok(LoadedSnapshot {
+            reports: VecDeque::new(),
+            recovered: false,
+            invalid_candidates,
+        });
     }
 
-    let (candidate, error) =
-        last_error.context("report spool snapshot was present but unreadable")?;
-
-    Err(anyhow!(error)).with_context(|| {
-        format!(
-            "all available report spool snapshots are invalid; last invalid snapshot was {}",
-            candidate.display()
-        )
+    Ok(LoadedSnapshot {
+        reports: VecDeque::new(),
+        recovered: true,
+        invalid_candidates,
     })
+}
+
+async fn quarantine_corrupted_snapshots(candidates: &[PathBuf]) -> Result<()> {
+    for candidate in candidates {
+        if !fs::try_exists(candidate).await? {
+            continue;
+        }
+
+        let quarantine = corrupted_snapshot_path(candidate);
+
+        fs::rename(candidate, &quarantine).await.with_context(|| {
+            format!(
+                "failed to quarantine corrupted report spool {} as {}",
+                candidate.display(),
+                quarantine.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn corrupted_snapshot_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("pending-reports.json");
+    let timestamp = Utc::now().format("%Y%m%dT%H%M%SZ");
+
+    path.with_file_name(format!(
+        "{file_name}.corrupt-{timestamp}-{}",
+        Uuid::now_v7()
+    ))
 }
 
 fn temporary_path(path: &Path) -> PathBuf {
@@ -286,20 +370,44 @@ mod tests {
 
         assert_eq!(spool.len(), 1);
         assert_eq!(spool.front(), Some(&pending));
+        assert!(path.exists());
+        assert!(has_quarantined_snapshot(&directory).await);
 
         let _ = fs::remove_dir_all(directory).await;
     }
 
     #[tokio::test]
-    async fn rejects_corrupted_snapshots_instead_of_treating_them_as_empty() {
+    async fn quarantines_all_corrupted_snapshots_and_starts_fresh() {
         let directory = std::env::temp_dir().join(format!("mnemos-spool-{}", Uuid::now_v7()));
         let path = directory.join("pending-reports.json");
 
         fs::create_dir_all(&directory).await.unwrap();
         fs::write(&path, b"not-json").await.unwrap();
+        fs::write(temporary_path(&path), b"also-not-json")
+            .await
+            .unwrap();
+        fs::write(backup_path(&path), b"still-not-json")
+            .await
+            .unwrap();
 
-        assert!(ReportSpool::open(&path, 8).await.is_err());
+        let spool = ReportSpool::open(&path, 8).await.unwrap();
+
+        assert!(spool.is_empty());
+        assert!(path.exists());
+        assert!(has_quarantined_snapshot(&directory).await);
 
         let _ = fs::remove_dir_all(directory).await;
+    }
+
+    async fn has_quarantined_snapshot(directory: &Path) -> bool {
+        let mut entries = fs::read_dir(directory).await.unwrap();
+
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            if entry.file_name().to_string_lossy().contains(".corrupt-") {
+                return true;
+            }
+        }
+
+        false
     }
 }
