@@ -22,8 +22,10 @@ jobs:
           fetch-depth: 0
 
       - name: Apply exact reliability fixes
-        shell: python
+        shell: bash
         run: |
+          set -euo pipefail
+          python - <<'PY'
           from pathlib import Path
 
           diagnostics = Path("src/diagnostics.rs")
@@ -55,6 +57,7 @@ jobs:
 '''
           assert text.count(old) == 1
           realtime.write_text(text.replace(old, new))
+          PY
 
       - name: Install Rust formatter
         run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt
