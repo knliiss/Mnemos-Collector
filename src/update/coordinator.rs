@@ -86,6 +86,10 @@ impl UpdateCoordinator {
         realtime: Option<&mut RealtimeClient>,
         delivery_idle: bool,
     ) -> Result<Option<UpdateHandoffRequest>> {
+        if diagnostics::take_update_install_request() {
+            self.request_immediate_install();
+        }
+
         self.refresh_candidate_if_due().await?;
 
         let manual_install = self.manual_install_requested;
