@@ -1,13 +1,20 @@
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::str::FromStr;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use directories::ProjectDirs;
 use uuid::Uuid;
 
+use crate::update::CollectorVersion;
+
 const INSTALL_DIRECTORY: &str = "bin";
 const EXECUTABLE_NAME: &str = "mnemos-collector";
+const VERSION_EXTENSION: &str = "version";
+const REPLACEMENT_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+const REPLACEMENT_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 pub struct Installation;
 
@@ -15,14 +22,14 @@ impl Installation {
     pub fn install_and_launch(activation_token: &str, device_name: Option<&str>) -> Result<()> {
         let target = installation_path()?;
 
-        ensure_installed(&target)?;
+        ensure_installed(&target, false)?;
         launch_installed(&target, Some(activation_token), device_name)
     }
 
     pub fn migrate_existing_and_launch() -> Result<()> {
         let target = installation_path()?;
 
-        ensure_installed(&target)?;
+        ensure_installed(&target, true)?;
         launch_installed(&target, None, None)
     }
 
@@ -45,6 +52,28 @@ impl Installation {
 
         Ok(current == installed)
     }
+
+    pub fn record_current_version() -> Result<()> {
+        let target = installation_path()?;
+
+        if !target.exists() {
+            return Ok(());
+        }
+
+        let current = std::env::current_exe()
+            .context("failed to locate running collector executable")?
+            .canonicalize()
+            .context("failed to resolve running collector executable")?;
+        let installed = target
+            .canonicalize()
+            .context("failed to resolve collector installation")?;
+
+        if current != installed {
+            return Ok(());
+        }
+
+        write_version_marker(&target, current_build_version()?)
+    }
 }
 
 fn installation_path() -> Result<PathBuf> {
@@ -62,17 +91,32 @@ fn installation_path() -> Result<PathBuf> {
         .join(executable_name))
 }
 
-fn ensure_installed(target: &Path) -> Result<()> {
+fn ensure_installed(target: &Path, stop_existing_instance: bool) -> Result<()> {
     let current = std::env::current_exe()
         .context("failed to locate collector installer executable")?
         .canonicalize()
         .context("failed to resolve collector installer executable")?;
+    let current_version = current_build_version()?;
 
     if target.exists() {
         validate_existing_installation(target)?;
-        return Ok(());
+
+        if let Some(installed_version) = read_version_marker(target)?
+            && installed_version >= current_version
+        {
+            return Ok(());
+        }
     }
 
+    install_current_executable(&current, target, current_version, stop_existing_instance)
+}
+
+fn install_current_executable(
+    current: &Path,
+    target: &Path,
+    current_version: CollectorVersion,
+    stop_existing_instance: bool,
+) -> Result<()> {
     let parent = target
         .parent()
         .context("collector installation path has no parent directory")?;
@@ -83,20 +127,70 @@ fn ensure_installed(target: &Path) -> Result<()> {
 
     remove_if_exists(&temporary)?;
 
-    if let Err(error) = fs::copy(&current, &temporary) {
+    if let Err(error) = fs::copy(current, &temporary) {
         let _ = remove_if_exists(&temporary);
         return Err(error).context("failed to copy collector into its installation directory");
     }
 
-    preserve_executable_permissions(&current, &temporary)?;
+    preserve_executable_permissions(current, &temporary)?;
     sync_file(&temporary)?;
 
-    if let Err(error) = fs::rename(&temporary, target) {
+    let replacement_result = if target.exists() {
+        replace_existing_installation(&temporary, target, stop_existing_instance)
+    } else {
+        fs::rename(&temporary, target).context("failed to finalize collector installation")
+    };
+
+    if let Err(error) = replacement_result {
         let _ = remove_if_exists(&temporary);
-        return Err(error).context("failed to finalize collector installation");
+        return Err(error);
     }
 
+    write_version_marker(target, current_version)?;
+
     Ok(())
+}
+
+fn replace_existing_installation(
+    temporary: &Path,
+    target: &Path,
+    stop_existing_instance: bool,
+) -> Result<()> {
+    let backup = replacement_backup_path(target)?;
+
+    remove_if_exists(&backup)?;
+
+    if stop_existing_instance {
+        request_existing_collector_shutdown();
+    }
+
+    move_existing_to_backup(target, &backup, stop_existing_instance)?;
+
+    if let Err(error) = fs::rename(temporary, target) {
+        let _ = fs::rename(&backup, target);
+        return Err(error).context("failed to activate replacement collector installation");
+    }
+
+    let _ = remove_if_exists(&backup);
+
+    Ok(())
+}
+
+fn move_existing_to_backup(target: &Path, backup: &Path, retry_locked_file: bool) -> Result<()> {
+    let deadline = Instant::now() + REPLACEMENT_WAIT_TIMEOUT;
+
+    loop {
+        match fs::rename(target, backup) {
+            Ok(()) => return Ok(()),
+            Err(_) if retry_locked_file && Instant::now() < deadline => {
+                std::thread::sleep(REPLACEMENT_RETRY_INTERVAL);
+            }
+            Err(error) => {
+                return Err(error)
+                    .context("failed to move the previous collector installation out of the way");
+            }
+        }
+    }
 }
 
 fn validate_existing_installation(target: &Path) -> Result<()> {
@@ -114,6 +208,39 @@ fn validate_existing_installation(target: &Path) -> Result<()> {
     Ok(())
 }
 
+fn current_build_version() -> Result<CollectorVersion> {
+    CollectorVersion::from_str(env!("CARGO_PKG_VERSION"))
+        .context("collector build version is invalid")
+}
+
+fn version_marker_path(target: &Path) -> PathBuf {
+    target.with_extension(VERSION_EXTENSION)
+}
+
+fn read_version_marker(target: &Path) -> Result<Option<CollectorVersion>> {
+    let marker = version_marker_path(target);
+    let content = match fs::read_to_string(&marker) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", marker.display()));
+        }
+    };
+
+    match CollectorVersion::from_str(content.trim()) {
+        Ok(version) => Ok(Some(version)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn write_version_marker(target: &Path, version: CollectorVersion) -> Result<()> {
+    let marker = version_marker_path(target);
+    let content = format!("{version}\n");
+
+    fs::write(&marker, content).with_context(|| format!("failed to write {}", marker.display()))?;
+    sync_file(&marker)
+}
+
 fn temporary_installation_path(target: &Path) -> Result<PathBuf> {
     let parent = target
         .parent()
@@ -124,6 +251,18 @@ fn temporary_installation_path(target: &Path) -> Result<PathBuf> {
         .to_string_lossy();
 
     Ok(parent.join(format!("{file_name}.install-{}", Uuid::now_v7())))
+}
+
+fn replacement_backup_path(target: &Path) -> Result<PathBuf> {
+    let parent = target
+        .parent()
+        .context("collector installation path has no parent directory")?;
+    let file_name = target
+        .file_name()
+        .context("collector installation path has no file name")?
+        .to_string_lossy();
+
+    Ok(parent.join(format!("{file_name}.previous-{}", Uuid::now_v7())))
 }
 
 fn launch_installed(
@@ -169,6 +308,33 @@ fn remove_if_exists(path: &Path) -> Result<()> {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn request_existing_collector_shutdown() {
+    use std::ptr::null;
+
+    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_APP};
+
+    const WINDOW_CLASS_NAME: &str = "MnemosCollectorShell";
+    const WM_COLLECTOR_STOPPED: u32 = WM_APP + 3;
+
+    let class_name = WINDOW_CLASS_NAME
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let hwnd = unsafe { FindWindowW(class_name.as_ptr(), null()) };
+
+    if hwnd.is_null() {
+        return;
+    }
+
+    unsafe {
+        PostMessageW(hwnd, WM_COLLECTOR_STOPPED, 0, 0);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn request_existing_collector_shutdown() {}
+
 #[cfg(unix)]
 fn preserve_executable_permissions(source: &Path, target: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -201,6 +367,18 @@ mod tests {
         } else {
             assert_eq!(file_name, "mnemos-collector");
         }
+    }
+
+    #[test]
+    fn version_marker_is_adjacent_to_stable_executable() {
+        let target = installation_path().unwrap();
+        let marker = version_marker_path(&target);
+
+        assert_eq!(marker.parent(), target.parent());
+        assert_eq!(
+            marker.extension().and_then(|value| value.to_str()),
+            Some("version")
+        );
     }
 
     #[test]
