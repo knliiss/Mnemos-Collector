@@ -176,9 +176,7 @@ fn replace_existing_installation(
         return Err(error).context("failed to activate replacement collector installation");
     }
 
-    if let Err(error) = remove_if_exists(&backup) {
-        return Err(error).context("failed to remove previous collector installation");
-    }
+    let _ = remove_if_exists(&backup);
 
     Ok(())
 }
