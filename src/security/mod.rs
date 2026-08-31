@@ -212,7 +212,7 @@ pub fn validate_secret(secret: &str) -> Result<()> {
 
 #[cfg(any(target_os = "windows", test))]
 fn credential_target(account: &str) -> String {
-    format!("{account}.{KEYRING_SERVICE")
+    format!("{account}.{KEYRING_SERVICE}")
 }
 
 fn split_access_key(access_key: &str) -> Result<(&str, &str)> {
