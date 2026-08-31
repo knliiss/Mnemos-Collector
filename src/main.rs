@@ -20,6 +20,10 @@ const VERSION_MARKER_DELAY: Duration = Duration::from_secs(3);
 async fn main() {
     diagnostics::initialize();
     diagnostics::install_panic_hook();
+    diagnostics::info(
+        "startup",
+        format!("Build platform: {}", build_platform_label()),
+    );
 
     let internal_update = is_internal_update_invocation();
 
@@ -34,6 +38,21 @@ async fn main() {
 
         std::process::exit(1);
     }
+}
+
+fn build_platform_label() -> String {
+    let operating_system = match std::env::consts::OS {
+        "macos" => "macOS",
+        "windows" => "Windows",
+        "linux" => "Linux",
+        other => other,
+    };
+    let architecture = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        other => other,
+    };
+
+    format!("{operating_system} {architecture}")
 }
 
 fn is_internal_update_invocation() -> bool {
