@@ -417,11 +417,7 @@ impl PortableDesktop {
 
                     ui.vertical(|ui| {
                         ui.set_width(token_width);
-                        ui.label(
-                            RichText::new("Код активации")
-                                .size(11.0)
-                                .color(TEXT_MUTED),
-                        );
+                        ui.label(RichText::new("Код активации").size(11.0).color(TEXT_MUTED));
                         ui.add_enabled_ui(!self.provisioning, |ui| {
                             styled_text_edit(
                                 ui,
@@ -437,19 +433,9 @@ impl PortableDesktop {
 
                     ui.vertical(|ui| {
                         ui.set_width(device_width);
-                        ui.label(
-                            RichText::new("Устройство")
-                                .size(11.0)
-                                .color(TEXT_MUTED),
-                        );
+                        ui.label(RichText::new("Устройство").size(11.0).color(TEXT_MUTED));
                         ui.add_enabled_ui(!self.provisioning, |ui| {
-                            styled_text_edit(
-                                ui,
-                                &mut self.device_name,
-                                device_width,
-                                false,
-                                None,
-                            );
+                            styled_text_edit(ui, &mut self.device_name, device_width, false, None);
                         });
                     });
 
@@ -464,13 +450,9 @@ impl PortableDesktop {
                         } else {
                             "Активировать"
                         };
-                        let activate = primary_button(
-                            ui,
-                            button_text,
-                            button_width,
-                            self.provisioning,
-                        )
-                        .clicked();
+                        let activate =
+                            primary_button(ui, button_text, button_width, self.provisioning)
+                                .clicked();
 
                         if activate {
                             self.begin_activation();
@@ -575,13 +557,8 @@ impl PortableDesktop {
                     ui.label(RichText::new("Журнал").size(19.0).color(TEXT).strong());
 
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                        if toggle_button(
-                            ui,
-                            "Диагностика",
-                            diagnostics::debug_enabled(),
-                            154.0,
-                        )
-                        .clicked()
+                        if toggle_button(ui, "Диагностика", diagnostics::debug_enabled(), 154.0)
+                            .clicked()
                         {
                             diagnostics::set_debug_enabled(!diagnostics::debug_enabled());
                         }
@@ -751,12 +728,7 @@ fn styled_text_edit(
         .inner
 }
 
-fn primary_button(
-    ui: &mut egui::Ui,
-    label: &str,
-    width: f32,
-    disabled: bool,
-) -> egui::Response {
+fn primary_button(ui: &mut egui::Ui, label: &str, width: f32, disabled: bool) -> egui::Response {
     let fill = if disabled { ACCENT_DIM } else { ACCENT };
     let text = if disabled { TEXT_SECONDARY } else { BACKGROUND };
     let border = if disabled { ACCENT_DIM } else { ACCENT };
@@ -780,12 +752,7 @@ fn secondary_button(ui: &mut egui::Ui, label: &str, width: f32) -> egui::Respons
     )
 }
 
-fn toggle_button(
-    ui: &mut egui::Ui,
-    label: &str,
-    enabled: bool,
-    width: f32,
-) -> egui::Response {
+fn toggle_button(ui: &mut egui::Ui, label: &str, enabled: bool, width: f32) -> egui::Response {
     let fill = if enabled { ACCENT_DIM } else { SURFACE_RAISED };
     let border = if enabled { ACCENT } else { LINE };
     let dot = if enabled { "●" } else { "○" };
