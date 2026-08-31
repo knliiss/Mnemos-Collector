@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use mnemos_collector::cristalix::discover_latest_log;
 use mnemos_collector::desktop::{self, DesktopLaunchContext};
 use mnemos_collector::diagnostics::{self, InstallationMode};
 use mnemos_collector::launch::LaunchArguments;
@@ -92,6 +93,7 @@ async fn run() -> Result<()> {
     } else {
         InstallationMode::External
     });
+    prime_cristalix_log_path();
 
     if arguments.activation_token.is_some() && !current_installation {
         bail!(
@@ -145,6 +147,18 @@ async fn run() -> Result<()> {
         },
         tokio::runtime::Handle::current(),
     )
+}
+
+fn prime_cristalix_log_path() {
+    let Some(path) = discover_latest_log(None, &[]) else {
+        return;
+    };
+
+    diagnostics::set_log_path(Some(path.clone()));
+    diagnostics::debug(
+        "cristalix",
+        format!("Preflight latest.log detected: {}", path.display()),
+    );
 }
 
 fn prepare_provisioned_startup(arguments: &LaunchArguments) -> Result<()> {
