@@ -114,23 +114,14 @@ fn load_from_keyring(service: &str, account: &str) -> Result<Option<String>> {
 
 fn load_with_security_tool(service: &str, account: &str) -> Result<Option<String>> {
     let output = Command::new(SECURITY_TOOL)
-        .args([
-            "find-generic-password",
-            "-s",
-            service,
-            "-a",
-            account,
-            "-w",
-        ])
+        .args(["find-generic-password", "-s", service, "-a", account, "-w"])
         .output()
         .context("failed to start the macOS Keychain migration helper")?;
 
     if output.status.success() {
         let value = String::from_utf8(output.stdout)
             .context("macOS Keychain migration returned non-UTF-8 credential data")?;
-        let value = value
-            .trim_end_matches(&['\r', '\n'][..])
-            .to_owned();
+        let value = value.trim_end_matches(&['\r', '\n'][..]).to_owned();
 
         if value.is_empty() {
             bail!("macOS Keychain migration returned an empty credential");
@@ -208,8 +199,8 @@ fn read_protected_file(path: &Path) -> Result<Option<String>> {
             .with_context(|| format!("failed to secure {}", path.display()))?;
     }
 
-    let value = fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let value =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
 
     if value.is_empty() {
         bail!("Collector credential file is empty");
@@ -223,8 +214,7 @@ fn persist_protected_file(path: &Path, value: &str) -> Result<()> {
         .parent()
         .context("Collector credential path has no parent directory")?;
 
-    fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create {}", parent.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
     fs::set_permissions(parent, fs::Permissions::from_mode(DIRECTORY_MODE))
         .with_context(|| format!("failed to secure {}", parent.display()))?;
 
@@ -271,7 +261,8 @@ mod tests {
 
     #[test]
     fn protected_file_round_trip_uses_private_permissions() {
-        let directory = std::env::temp_dir().join(format!("mnemos-macos-secret-{}", Uuid::now_v7()));
+        let directory =
+            std::env::temp_dir().join(format!("mnemos-macos-secret-{}", Uuid::now_v7()));
         let path = directory.join("credential");
 
         persist_protected_file(&path, "secret-value").unwrap();
