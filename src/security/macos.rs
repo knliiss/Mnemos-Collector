@@ -1,4 +1,4 @@
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -128,7 +128,9 @@ fn load_with_security_tool(service: &str, account: &str) -> Result<Option<String
     if output.status.success() {
         let value = String::from_utf8(output.stdout)
             .context("macOS Keychain migration returned non-UTF-8 credential data")?;
-        let value = value.trim_end_matches(['\r', '\n']).to_owned();
+        let value = value
+            .trim_end_matches(&['\r', '\n'][..])
+            .to_owned();
 
         if value.is_empty() {
             bail!("macOS Keychain migration returned an empty credential");
@@ -245,10 +247,6 @@ fn persist_protected_file(path: &Path, value: &str) -> Result<()> {
             .with_context(|| format!("failed to activate {}", path.display()))?;
         fs::set_permissions(path, fs::Permissions::from_mode(FILE_MODE))
             .with_context(|| format!("failed to secure {}", path.display()))?;
-        File::open(parent)
-            .with_context(|| format!("failed to open {} for flushing", parent.display()))?
-            .sync_all()
-            .with_context(|| format!("failed to flush {}", parent.display()))?;
 
         let persisted = fs::read_to_string(path)
             .with_context(|| format!("failed to verify {}", path.display()))?;
