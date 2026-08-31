@@ -31,6 +31,7 @@ const SURFACE: Color32 = Color32::from_rgb(0x15, 0x16, 0x12);
 const SURFACE_RAISED: Color32 = Color32::from_rgb(0x1f, 0x20, 0x1a);
 const ACCENT_DIM: Color32 = Color32::from_rgb(0x26, 0x31, 0x0d);
 const LINE: Color32 = Color32::from_rgb(0x35, 0x38, 0x31);
+const LINE_STRONG: Color32 = Color32::from_rgb(0x4a, 0x4e, 0x44);
 const TEXT: Color32 = Color32::from_rgb(0xf5, 0xf6, 0xef);
 const TEXT_SECONDARY: Color32 = Color32::from_rgb(0xc2, 0xc4, 0xb8);
 const TEXT_MUTED: Color32 = Color32::from_rgb(0x7c, 0x80, 0x72);
@@ -377,82 +378,111 @@ impl PortableDesktop {
 
         let rect = response.response.rect;
         let accent_rect = egui::Rect::from_min_max(
-            egui::pos2(rect.left(), rect.top() + 22.0),
-            egui::pos2(rect.left() + 4.0, rect.bottom() - 22.0),
+            egui::pos2(rect.left() + 1.0, rect.top() + 24.0),
+            egui::pos2(rect.left() + 4.0, rect.top() + 82.0),
         );
         ui.painter().rect_filled(accent_rect, 2.0, status_color);
     }
 
     fn draw_activation(&mut self, ui: &mut egui::Ui) {
-        card_frame(24).show(ui, |ui| {
-            ui.label(
-                RichText::new(if self.current_installation {
-                    "Подключить Collector"
-                } else {
-                    "Установить Collector"
-                })
-                .size(19.0)
-                .color(TEXT)
-                .strong(),
-            );
-            ui.label(
-                RichText::new("Введите одноразовый код из Mnemos.")
-                    .size(13.0)
-                    .color(TEXT_SECONDARY),
-            );
-            ui.add_space(8.0);
+        egui::Frame::new()
+            .fill(SURFACE)
+            .stroke(Stroke::new(1.0_f32, LINE))
+            .corner_radius(24)
+            .inner_margin(18)
+            .show(ui, |ui| {
+                ui.set_min_height(98.0);
 
-            ui.add_enabled_ui(!self.provisioning, |ui| {
+                ui.label(
+                    RichText::new(if self.current_installation {
+                        "Подключить Collector"
+                    } else {
+                        "Установить Collector"
+                    })
+                    .size(19.0)
+                    .color(TEXT)
+                    .strong(),
+                );
+                ui.add_space(8.0);
+
+                let gap = 10.0;
+                let device_width = 176.0;
+                let button_width = 132.0;
+                let available_width = ui.available_width();
+                let token_width =
+                    (available_width - device_width - button_width - gap * 2.0).max(210.0);
+
                 ui.horizontal_top(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new("Код").size(11.0).color(TEXT_MUTED));
-                        ui.add_sized(
-                            [480.0, 34.0],
-                            egui::TextEdit::singleline(&mut self.activation_token)
-                                .password(true)
-                                .hint_text("Одноразовый код"),
-                        );
-                    });
+                    ui.set_width(available_width);
 
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("Устройство").size(11.0).color(TEXT_MUTED));
-                        ui.add_sized(
-                            [205.0, 34.0],
-                            egui::TextEdit::singleline(&mut self.device_name),
+                        ui.set_width(token_width);
+                        ui.label(
+                            RichText::new("Код активации")
+                                .size(11.0)
+                                .color(TEXT_MUTED),
                         );
+                        ui.add_enabled_ui(!self.provisioning, |ui| {
+                            styled_text_edit(
+                                ui,
+                                &mut self.activation_token,
+                                token_width,
+                                true,
+                                Some("Одноразовый код"),
+                            );
+                        });
                     });
 
+                    ui.add_space(gap - ui.spacing().item_spacing.x);
+
                     ui.vertical(|ui| {
-                        ui.add_space(19.0);
+                        ui.set_width(device_width);
+                        ui.label(
+                            RichText::new("Устройство")
+                                .size(11.0)
+                                .color(TEXT_MUTED),
+                        );
+                        ui.add_enabled_ui(!self.provisioning, |ui| {
+                            styled_text_edit(
+                                ui,
+                                &mut self.device_name,
+                                device_width,
+                                false,
+                                None,
+                            );
+                        });
+                    });
+
+                    ui.add_space(gap - ui.spacing().item_spacing.x);
+
+                    ui.vertical(|ui| {
+                        ui.set_width(button_width);
+                        ui.add_space(18.0);
+
                         let button_text = if self.provisioning {
-                            "Активация…"
+                            "Подключаем..."
                         } else {
                             "Активировать"
                         };
-                        let activate = ui
-                            .add(
-                                egui::Button::new(RichText::new(button_text).strong())
-                                    .min_size(egui::vec2(150.0, 34.0)),
-                            )
-                            .clicked();
+                        let activate = primary_button(
+                            ui,
+                            button_text,
+                            button_width,
+                            self.provisioning,
+                        )
+                        .clicked();
 
                         if activate {
                             self.begin_activation();
                         }
                     });
                 });
+
+                if let Some(error) = self.activation_error.as_deref() {
+                    ui.add_space(6.0);
+                    ui.colored_label(DANGER, error);
+                }
             });
-
-            if self.provisioning {
-                ui.add_space(6.0);
-                ui.label(RichText::new("Проверяем код и сохраняем credential…").color(TEXT_MUTED));
-            }
-
-            if let Some(error) = self.activation_error.as_deref() {
-                ui.add_space(6.0);
-                ui.colored_label(DANGER, error);
-            }
-        });
     }
 
     fn draw_log_source(&mut self, ui: &mut egui::Ui, runtime: &RuntimeSnapshot) {
@@ -474,7 +504,14 @@ impl PortableDesktop {
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    if configured_path.is_some() && ui.button("Автопоиск").clicked() {
+                    #[cfg(target_os = "macos")]
+                    if secondary_button(ui, "Выбрать файл…", 124.0).clicked() {
+                        self.select_macos_log_file();
+                    }
+
+                    if configured_path.is_some()
+                        && secondary_button(ui, "Автопоиск", 104.0).clicked()
+                    {
                         match clear_configured_latest_log_path() {
                             Ok(()) => {
                                 self.log_source_error = None;
@@ -489,11 +526,6 @@ impl PortableDesktop {
                                 ));
                             }
                         }
-                    }
-
-                    #[cfg(target_os = "macos")]
-                    if ui.button("Выбрать файл…").clicked() {
-                        self.select_macos_log_file();
                     }
                 });
             });
@@ -540,25 +572,21 @@ impl PortableDesktop {
                 ui.set_min_height((desired_height - 30.0).max(150.0));
 
                 ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("ЖУРНАЛ COLLECTOR")
-                            .size(11.0)
-                            .color(ACCENT)
-                            .strong(),
-                    );
+                    ui.label(RichText::new("Журнал").size(19.0).color(TEXT).strong());
 
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                        let diagnostics_label = if diagnostics::debug_enabled() {
-                            "Диагностика: вкл"
-                        } else {
-                            "Диагностика: выкл"
-                        };
-
-                        if ui.button(diagnostics_label).clicked() {
+                        if toggle_button(
+                            ui,
+                            "Диагностика",
+                            diagnostics::debug_enabled(),
+                            154.0,
+                        )
+                        .clicked()
+                        {
                             diagnostics::set_debug_enabled(!diagnostics::debug_enabled());
                         }
 
-                        if ui.button("Копировать всё").clicked() {
+                        if secondary_button(ui, "Копировать всё", 156.0).clicked() {
                             context.copy_text(diagnostics::recent_text());
                             diagnostics::info("desktop", "Journal copied to clipboard as text");
                         }
@@ -666,11 +694,12 @@ fn configure_style(context: &egui::Context) {
     visuals.faint_bg_color = SURFACE;
     visuals.widgets.noninteractive.bg_fill = SURFACE;
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, LINE);
-    visuals.widgets.inactive.bg_fill = SURFACE_RAISED;
+    visuals.widgets.inactive.bg_fill = SURFACE;
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, LINE);
-    visuals.widgets.hovered.bg_fill = ACCENT_DIM;
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, ACCENT);
+    visuals.widgets.hovered.bg_fill = SURFACE_RAISED;
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, LINE_STRONG);
     visuals.widgets.active.bg_fill = ACCENT_DIM;
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, ACCENT);
     visuals.selection.bg_fill = ACCENT_DIM;
     visuals.selection.stroke.color = ACCENT;
     visuals.override_text_color = Some(TEXT);
@@ -692,6 +721,85 @@ fn card_frame(radius: u8) -> egui::Frame {
         .inner_margin(16)
 }
 
+fn styled_text_edit(
+    ui: &mut egui::Ui,
+    value: &mut String,
+    width: f32,
+    password: bool,
+    hint: Option<&str>,
+) -> egui::Response {
+    egui::Frame::new()
+        .fill(SURFACE_RAISED)
+        .stroke(Stroke::new(1.0_f32, LINE_STRONG))
+        .corner_radius(17)
+        .inner_margin(egui::Margin::symmetric(10, 5))
+        .show(ui, |ui| {
+            let mut edit = egui::TextEdit::singleline(value)
+                .frame(false)
+                .desired_width((width - 20.0).max(40.0));
+
+            if password {
+                edit = edit.password(true);
+            }
+
+            if let Some(hint) = hint {
+                edit = edit.hint_text(hint);
+            }
+
+            ui.add_sized([(width - 20.0).max(40.0), 24.0], edit)
+        })
+        .inner
+}
+
+fn primary_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    width: f32,
+    disabled: bool,
+) -> egui::Response {
+    let fill = if disabled { ACCENT_DIM } else { ACCENT };
+    let text = if disabled { TEXT_SECONDARY } else { BACKGROUND };
+    let border = if disabled { ACCENT_DIM } else { ACCENT };
+
+    ui.add_sized(
+        [width, 34.0],
+        egui::Button::new(RichText::new(label).size(13.0).color(text).strong())
+            .fill(fill)
+            .stroke(Stroke::new(1.0_f32, border))
+            .corner_radius(17),
+    )
+}
+
+fn secondary_button(ui: &mut egui::Ui, label: &str, width: f32) -> egui::Response {
+    ui.add_sized(
+        [width, 30.0],
+        egui::Button::new(RichText::new(label).size(12.0).color(TEXT_SECONDARY))
+            .fill(SURFACE)
+            .stroke(Stroke::new(1.0_f32, LINE))
+            .corner_radius(15),
+    )
+}
+
+fn toggle_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    enabled: bool,
+    width: f32,
+) -> egui::Response {
+    let fill = if enabled { ACCENT_DIM } else { SURFACE_RAISED };
+    let border = if enabled { ACCENT } else { LINE };
+    let dot = if enabled { "●" } else { "○" };
+    let text = format!("{dot}  {label}");
+
+    ui.add_sized(
+        [width, 30.0],
+        egui::Button::new(RichText::new(text).size(12.0).color(TEXT_SECONDARY))
+            .fill(fill)
+            .stroke(Stroke::new(1.0_f32, border))
+            .corner_radius(15),
+    )
+}
+
 fn status_tile(ui: &mut egui::Ui, label: &str, value: &str, color: Color32) {
     egui::Frame::new()
         .fill(SURFACE_RAISED)
@@ -700,12 +808,14 @@ fn status_tile(ui: &mut egui::Ui, label: &str, value: &str, color: Color32) {
         .inner_margin(10)
         .show(ui, |ui| {
             ui.set_min_height(46.0);
-            ui.label(RichText::new(label).size(10.0).color(TEXT_MUTED).strong());
+
             ui.horizontal(|ui| {
-                let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
-                ui.painter().circle_filled(dot_rect.center(), 4.0, color);
-                ui.label(RichText::new(value).size(13.0).color(TEXT).strong());
+                let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(7.0, 7.0), Sense::hover());
+                ui.painter().circle_filled(dot_rect.center(), 3.5, color);
+                ui.label(RichText::new(label).size(10.0).color(TEXT_MUTED).strong());
             });
+
+            ui.label(RichText::new(value).size(13.0).color(TEXT).strong());
         });
 }
 
