@@ -122,7 +122,7 @@ impl RealtimeClient {
             alive,
             reader_task,
             response_timeout: config.response_timeout,
-            acknowledged_state: None,
+            acknowledged_state: Some(initial_observation_state()),
         })
     }
 
@@ -300,6 +300,13 @@ impl Drop for RealtimeClient {
     }
 }
 
+fn initial_observation_state() -> ObservationState {
+    // The realtime-service acquires every new session as PAUSED and only adds it to the active
+    // observer set after an explicit OBSERVING transition. Mirroring that server invariant avoids
+    // a redundant PAUSED round-trip during startup before a live Cristalix session is confirmed.
+    ObservationState::Paused
+}
+
 fn validate_handshake_headers(headers: &HeaderMap) -> Result<()> {
     let server_protocol = optional_header_u16(headers, &SERVER_PROTOCOL_HEADER)?;
     let minimum_version = optional_header_text(headers, &MINIMUM_VERSION_HEADER)?;
@@ -400,11 +407,14 @@ async fn read_loop(
     inbound: mpsc::Sender<InboundEvent>,
     alive: Arc<AtomicBool>,
 ) {
+    let mut failure_reported = false;
+
     while let Some(result) = reader.next().await {
         let message = match result {
             Ok(message) => message,
             Err(error) => {
-                send_failure(&inbound, error.to_string()).await;
+                report_failure(&inbound, &alive, error.to_string()).await;
+                failure_reported = true;
                 break;
             }
         };
@@ -422,11 +432,13 @@ async fn read_loop(
                         }
                     }
                     Err(error) => {
-                        send_failure(
+                        report_failure(
                             &inbound,
+                            &alive,
                             format!("realtime-service returned an invalid message: {error}"),
                         )
                         .await;
+                        failure_reported = true;
                         break;
                     }
                 }
@@ -436,33 +448,57 @@ async fn read_loop(
                 let result = writer.lock().await.send(Message::Pong(payload)).await;
 
                 if let Err(error) = result {
-                    send_failure(&inbound, format!("failed to answer heartbeat: {error}")).await;
+                    report_failure(
+                        &inbound,
+                        &alive,
+                        format!("failed to answer heartbeat: {error}"),
+                    )
+                    .await;
+                    failure_reported = true;
                     break;
                 }
             }
             Message::Pong(_) => diagnostics::mark_realtime_activity(),
             Message::Close(frame) => {
-                send_failure(
+                report_failure(
                     &inbound,
+                    &alive,
                     format!("realtime-service closed collector connection: {frame:?}"),
                 )
                 .await;
+                failure_reported = true;
                 break;
             }
             Message::Binary(_) | Message::Frame(_) => {}
         }
     }
 
+    if !failure_reported && alive.load(Ordering::Acquire) {
+        diagnostics::error(
+            "realtime",
+            "WebSocket stream ended without a close frame; connection will be re-established",
+        );
+    }
+
     alive.store(false, Ordering::Release);
 }
 
-async fn send_failure(inbound: &mpsc::Sender<InboundEvent>, message: String) {
+async fn report_failure(inbound: &mpsc::Sender<InboundEvent>, alive: &AtomicBool, message: String) {
+    if alive.load(Ordering::Acquire) {
+        diagnostics::error("realtime", message.clone());
+    }
+
     let _ = inbound.send(InboundEvent::Failed(message)).await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_authenticated_session_starts_paused() {
+        assert_eq!(initial_observation_state(), ObservationState::Paused);
+    }
 
     #[test]
     fn accepts_missing_optional_compatibility_headers() {
