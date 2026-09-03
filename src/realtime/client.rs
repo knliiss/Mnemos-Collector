@@ -483,11 +483,7 @@ async fn read_loop(
     alive.store(false, Ordering::Release);
 }
 
-async fn report_failure(
-    inbound: &mpsc::Sender<InboundEvent>,
-    alive: &AtomicBool,
-    message: String,
-) {
+async fn report_failure(inbound: &mpsc::Sender<InboundEvent>, alive: &AtomicBool, message: String) {
     if alive.load(Ordering::Acquire) {
         diagnostics::warn("realtime", message.clone());
     }
