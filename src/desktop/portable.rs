@@ -4,6 +4,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use eframe::egui::{self, Align, Color32, RichText, Sense, Stroke};
 use tokio::runtime::Handle;
 use zeroize::Zeroizing;
@@ -24,6 +25,7 @@ use super::macos_native::{self, MacStatusItem};
 const WINDOW_WIDTH: f32 = 1080.0;
 const WINDOW_HEIGHT: f32 = 720.0;
 const REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+const FOOTER_HEIGHT: f32 = 18.0;
 
 const BACKGROUND: Color32 = Color32::from_rgb(0x02, 0x03, 0x02);
 const LOG_SURFACE: Color32 = Color32::from_rgb(0x0b, 0x0c, 0x09);
@@ -41,7 +43,7 @@ const WARNING: Color32 = Color32::from_rgb(0xff, 0xb3, 0x4f);
 const DANGER: Color32 = Color32::from_rgb(0xff, 0x68, 0x73);
 
 pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
-    let viewport = egui::ViewportBuilder::default()
+    let mut viewport = egui::ViewportBuilder::default()
         .with_title("Mnemos Collector")
         .with_app_id("rest.knalis.mnemos-collector")
         .with_inner_size([WINDOW_WIDTH, WINDOW_HEIGHT])
@@ -50,6 +52,12 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
         .with_resizable(false)
         .with_maximize_button(false)
         .with_icon(portable_icon());
+
+    #[cfg(target_os = "macos")]
+    {
+        viewport = viewport.with_decorations(false);
+    }
+
     let options = eframe::NativeOptions {
         viewport,
         centered: true,
@@ -283,12 +291,12 @@ impl PortableDesktop {
     fn copy_selected_log(&self, context: &egui::Context) {
         if let Some(entry) = self.selected_log_entry.as_ref() {
             context.copy_text(entry.clone());
-            diagnostics::info("desktop", "Selected log entry copied to clipboard");
+            diagnostics::info("desktop", "Selected log entry copied to clipboard as text");
         }
     }
 
-    fn draw_header(&self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+    fn draw_header(&self, ui: &mut egui::Ui, context: &egui::Context) {
+        let header = ui.horizontal(|ui| {
             egui::Frame::new()
                 .fill(SURFACE)
                 .stroke(Stroke::new(1.0_f32, LINE))
@@ -306,6 +314,18 @@ impl PortableDesktop {
             });
 
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                #[cfg(target_os = "macos")]
+                {
+                    if window_button(ui, "×", true).clicked() {
+                        macos_native::hide_application();
+                    }
+
+                    if window_button(ui, "—", false).clicked() {
+                        context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                    }
+                }
+
+                #[cfg(not(target_os = "macos"))]
                 ui.label(
                     RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
                         .size(12.0)
@@ -313,6 +333,19 @@ impl PortableDesktop {
                 );
             });
         });
+
+        #[cfg(target_os = "macos")]
+        {
+            let drag = ui.interact(
+                header.response.rect,
+                ui.id().with("mnemos-window-drag"),
+                Sense::drag(),
+            );
+
+            if drag.drag_started() {
+                context.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+        }
     }
 
     fn draw_hero(&self, ui: &mut egui::Ui, runtime: &RuntimeSnapshot) {
@@ -467,6 +500,14 @@ impl PortableDesktop {
             });
     }
 
+    fn should_draw_log_source(&self, runtime: &RuntimeSnapshot) -> bool {
+        log_source_recovery_needed(
+            configured_latest_log_path().is_some(),
+            runtime.log_path.is_some(),
+            self.log_source_error.is_some(),
+        )
+    }
+
     fn draw_log_source(&mut self, ui: &mut egui::Ui, runtime: &RuntimeSnapshot) {
         let configured_path = configured_latest_log_path();
         let active_path = runtime.log_path.as_deref();
@@ -542,8 +583,18 @@ impl PortableDesktop {
         }
     }
 
-    fn draw_journal(&mut self, ui: &mut egui::Ui, context: &egui::Context) {
-        let desired_height = ui.available_height().max(180.0);
+    fn draw_journal(
+        &mut self,
+        ui: &mut egui::Ui,
+        context: &egui::Context,
+        runtime: &RuntimeSnapshot,
+    ) {
+        #[cfg(target_os = "macos")]
+        let reserved_footer = FOOTER_HEIGHT;
+        #[cfg(not(target_os = "macos"))]
+        let reserved_footer = 0.0;
+
+        let desired_height = (ui.available_height() - reserved_footer).max(180.0);
 
         egui::Frame::new()
             .fill(SURFACE)
@@ -567,6 +618,24 @@ impl PortableDesktop {
                             context.copy_text(diagnostics::recent_text());
                             diagnostics::info("desktop", "Journal copied to clipboard as text");
                         }
+
+                        if let Some(version) = runtime.available_update_version.as_deref() {
+                            let busy = runtime.update_installing || runtime.update_waiting_for_slot;
+                            let label = if runtime.update_installing {
+                                "Установка...".to_owned()
+                            } else if runtime.update_waiting_for_slot {
+                                "Ожидание слота...".to_owned()
+                            } else {
+                                format!("Обновить до v{version}")
+                            };
+
+                            if update_button(ui, &label, busy).clicked() && !busy {
+                                diagnostics::request_update_install();
+                            }
+                        }
+
+                        let summary = diagnostics_summary(runtime);
+                        ui.label(RichText::new(summary).size(11.0).color(TEXT_MUTED));
                     });
                 });
 
@@ -623,6 +692,17 @@ impl PortableDesktop {
             self.copy_selected_log(context);
         }
     }
+
+    #[cfg(target_os = "macos")]
+    fn draw_footer(&self, ui: &mut egui::Ui) {
+        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+            ui.label(
+                RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                    .size(12.0)
+                    .color(TEXT_MUTED),
+            );
+        });
+    }
 }
 
 impl eframe::App for PortableDesktop {
@@ -636,7 +716,7 @@ impl eframe::App for PortableDesktop {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(22))
             .show(context, |ui| {
-                self.draw_header(ui);
+                self.draw_header(ui, context);
                 ui.add_space(12.0);
                 self.draw_hero(ui, &runtime);
                 ui.add_space(16.0);
@@ -646,14 +726,15 @@ impl eframe::App for PortableDesktop {
                     ui.add_space(16.0);
                 }
 
-                self.draw_log_source(ui, &runtime);
-                ui.add_space(16.0);
-                self.draw_journal(ui, context);
-
-                if let Some(error) = runtime.last_error.as_deref() {
-                    ui.add_space(6.0);
-                    ui.colored_label(DANGER, error);
+                if self.should_draw_log_source(&runtime) {
+                    self.draw_log_source(ui, &runtime);
+                    ui.add_space(16.0);
                 }
+
+                self.draw_journal(ui, context, &runtime);
+
+                #[cfg(target_os = "macos")]
+                self.draw_footer(ui);
             });
     }
 
@@ -767,6 +848,33 @@ fn toggle_button(ui: &mut egui::Ui, label: &str, enabled: bool, width: f32) -> e
     )
 }
 
+fn update_button(ui: &mut egui::Ui, label: &str, disabled: bool) -> egui::Response {
+    let fill = if disabled { SURFACE_RAISED } else { ACCENT_DIM };
+    let border = if disabled { LINE_STRONG } else { ACCENT };
+    let text = if disabled { TEXT_MUTED } else { ACCENT };
+
+    ui.add_sized(
+        [184.0, 30.0],
+        egui::Button::new(RichText::new(label).size(12.0).color(text).strong())
+            .fill(fill)
+            .stroke(Stroke::new(1.0_f32, border))
+            .corner_radius(15),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn window_button(ui: &mut egui::Ui, label: &str, danger: bool) -> egui::Response {
+    let text = if danger { DANGER } else { TEXT_SECONDARY };
+
+    ui.add_sized(
+        [38.0, 34.0],
+        egui::Button::new(RichText::new(label).size(18.0).color(text))
+            .fill(BACKGROUND)
+            .stroke(Stroke::NONE)
+            .corner_radius(12),
+    )
+}
+
 fn status_tile(ui: &mut egui::Ui, label: &str, value: &str, color: Color32) {
     egui::Frame::new()
         .fill(SURFACE_RAISED)
@@ -841,6 +949,48 @@ fn status_copy(
     ("Cristalix активен", "Ожидаем переход в Master Sword.", TEXT)
 }
 
+fn diagnostics_summary(runtime: &RuntimeSnapshot) -> String {
+    if let Some(required) = runtime.required_update_version.as_deref() {
+        return format!("ТРЕБУЕТСЯ ОБНОВЛЕНИЕ ДО v{required}");
+    }
+
+    let protocol = match (
+        runtime.collector_protocol_version,
+        runtime.server_protocol_version,
+    ) {
+        (Some(collector), Some(server)) if collector == server => format!("P{collector}"),
+        (Some(collector), Some(server)) => format!("P{collector}/{server}"),
+        (Some(collector), None) => format!("P{collector}"),
+        _ => "P?".to_owned(),
+    };
+    let queue = if runtime.spool_capacity == 0 {
+        format!("QUEUE {}", runtime.spool_pending)
+    } else {
+        format!("QUEUE {}/{}", runtime.spool_pending, runtime.spool_capacity)
+    };
+    let log = format!("LOG {}", age_compact(runtime.last_log_activity_at));
+    let realtime = format!("WS {}", age_compact(runtime.last_realtime_message_at));
+
+    format!("{queue}  ·  {protocol}  ·  {log}  ·  {realtime}")
+}
+
+fn age_compact(timestamp: Option<chrono::DateTime<Utc>>) -> String {
+    let Some(timestamp) = timestamp else {
+        return "—".to_owned();
+    };
+    let seconds = Utc::now()
+        .signed_duration_since(timestamp)
+        .num_seconds()
+        .max(0);
+
+    match seconds {
+        0..=4 => "now".to_owned(),
+        5..=59 => format!("{seconds}s"),
+        60..=3_599 => format!("{}m", seconds / 60),
+        _ => format!("{}h", seconds / 3_600),
+    }
+}
+
 fn game_mode_label(mode: &str) -> &str {
     if is_master_sword(mode) {
         "Master Sword"
@@ -853,6 +1003,10 @@ fn game_mode_label(mode: &str) -> &str {
 
 fn is_master_sword(mode: &str) -> bool {
     mode.eq_ignore_ascii_case("MasterSword") || mode.eq_ignore_ascii_case("Master Sword")
+}
+
+fn log_source_recovery_needed(configured: bool, active: bool, has_error: bool) -> bool {
+    configured || !active || has_error
 }
 
 fn shortened_path(path: &Path) -> String {
@@ -1038,5 +1192,28 @@ mod tests {
         assert!(is_master_sword("MasterSword"));
         assert!(is_master_sword("Master Sword"));
         assert!(!is_master_sword("Unknown"));
+    }
+
+    #[test]
+    fn healthy_auto_log_source_does_not_add_an_extra_card() {
+        assert!(!log_source_recovery_needed(false, true, false));
+        assert!(log_source_recovery_needed(false, false, false));
+        assert!(log_source_recovery_needed(true, true, false));
+        assert!(log_source_recovery_needed(false, true, true));
+    }
+
+    #[test]
+    fn diagnostics_summary_matches_windows_information_density() {
+        let runtime = RuntimeSnapshot {
+            spool_pending: 12,
+            spool_capacity: 1_024,
+            collector_protocol_version: Some(1),
+            server_protocol_version: Some(1),
+            ..RuntimeSnapshot::default()
+        };
+        let summary = diagnostics_summary(&runtime);
+
+        assert!(summary.contains("QUEUE 12/1024"));
+        assert!(summary.contains("P1"));
     }
 }
