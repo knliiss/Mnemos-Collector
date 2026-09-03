@@ -474,7 +474,7 @@ async fn read_loop(
     }
 
     if !failure_reported && alive.load(Ordering::Acquire) {
-        diagnostics::warn(
+        diagnostics::error(
             "realtime",
             "WebSocket stream ended without a close frame; connection will be re-established",
         );
@@ -485,7 +485,7 @@ async fn read_loop(
 
 async fn report_failure(inbound: &mpsc::Sender<InboundEvent>, alive: &AtomicBool, message: String) {
     if alive.load(Ordering::Acquire) {
-        diagnostics::warn("realtime", message.clone());
+        diagnostics::error("realtime", message.clone());
     }
 
     let _ = inbound.send(InboundEvent::Failed(message)).await;
