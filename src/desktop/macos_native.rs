@@ -74,10 +74,11 @@ impl MacStatusItem {
 impl Drop for MacStatusItem {
     fn drop(&mut self) {
         unsafe {
-            if !self.status_bar.is_null() && !self.status_item.is_null() {
-                if let Ok(remove_status_item) = selector("removeStatusItem:") {
-                    message_void_id(self.status_bar, remove_status_item, self.status_item);
-                }
+            if !self.status_bar.is_null()
+                && !self.status_item.is_null()
+                && let Ok(remove_status_item) = selector("removeStatusItem:")
+            {
+                message_void_id(self.status_bar, remove_status_item, self.status_item);
             }
         }
     }
