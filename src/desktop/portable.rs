@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use eframe::egui::{self, Align, Color32, RichText, Sense, Stroke};
+use eframe::egui::{
+    self, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind,
+};
 use tokio::runtime::Handle;
 use zeroize::Zeroizing;
 
@@ -25,8 +27,20 @@ use super::macos_native::{self, MacStatusItem};
 const WINDOW_WIDTH: f32 = 1080.0;
 const WINDOW_HEIGHT: f32 = 720.0;
 const REFRESH_INTERVAL: Duration = Duration::from_millis(500);
-#[cfg(target_os = "macos")]
-const FOOTER_HEIGHT: f32 = 18.0;
+
+const CONTENT_MARGIN: f32 = 22.0;
+const HEADER_HEIGHT: f32 = 68.0;
+const HERO_TOP: f32 = HEADER_HEIGHT + 6.0;
+const HERO_HEIGHT: f32 = 154.0;
+const CARD_RADIUS: u8 = 24;
+const LOG_ACTION_HEIGHT: f32 = 30.0;
+const DEBUG_TOGGLE_WIDTH: f32 = 154.0;
+const COPY_LOGS_WIDTH: f32 = 156.0;
+const UPDATE_BUTTON_WIDTH: f32 = 184.0;
+const LOG_ACTION_GAP: f32 = 10.0;
+const STATUS_TILE_HEIGHT: f32 = 46.0;
+const STATUS_TILE_BOTTOM_MARGIN: f32 = 12.0;
+const LOG_SOURCE_HEIGHT: f32 = 64.0;
 
 const BACKGROUND: Color32 = Color32::from_rgb(0x02, 0x03, 0x02);
 const LOG_SURFACE: Color32 = Color32::from_rgb(0x0b, 0x0c, 0x09);
@@ -126,6 +140,146 @@ pub fn show_fatal_error(message: &str) {
 enum ActivationOutcome {
     CurrentInstallation(String),
     InstalledAndLaunched,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PortableLayout {
+    title_bar: Rect,
+    window_minimize: Rect,
+    window_close: Rect,
+    hero: Rect,
+    activation: Option<Rect>,
+    token_field: Rect,
+    token_edit: Rect,
+    device_field: Rect,
+    device_edit: Rect,
+    activate_button: Rect,
+    log_source: Option<Rect>,
+    logs_card: Rect,
+    logs_view: Rect,
+    copy_logs: Rect,
+    debug_toggle: Rect,
+    update_button: Rect,
+    diagnostics_summary: Rect,
+}
+
+impl PortableLayout {
+    fn new(provisioned: bool, log_source_recovery: bool, update_available: bool) -> Self {
+        let content_right = WINDOW_WIDTH - CONTENT_MARGIN;
+        let title_bar = Rect::from_min_max(
+            egui::pos2(0.0, 0.0),
+            egui::pos2(WINDOW_WIDTH, HEADER_HEIGHT),
+        );
+        let window_close = Rect::from_min_max(
+            egui::pos2(WINDOW_WIDTH - 56.0, 13.0),
+            egui::pos2(WINDOW_WIDTH - 18.0, 47.0),
+        );
+        let window_minimize = Rect::from_min_max(
+            egui::pos2(window_close.left() - 46.0, 13.0),
+            egui::pos2(window_close.left() - 8.0, 47.0),
+        );
+        let hero = Rect::from_min_max(
+            egui::pos2(CONTENT_MARGIN, HERO_TOP),
+            egui::pos2(content_right, HERO_TOP + HERO_HEIGHT),
+        );
+
+        let (activation, mut next_top) = if provisioned {
+            (None, hero.bottom() + 16.0)
+        } else {
+            let activation = Rect::from_min_max(
+                egui::pos2(CONTENT_MARGIN, hero.bottom() + 16.0),
+                egui::pos2(content_right, hero.bottom() + 150.0),
+            );
+
+            (Some(activation), activation.bottom() + 16.0)
+        };
+
+        let activation_rect = activation.unwrap_or(Rect::from_min_max(
+            egui::pos2(CONTENT_MARGIN, 0.0),
+            egui::pos2(content_right, 0.0),
+        ));
+        let edit_top = activation_rect.top() + 72.0;
+        let inner_width = (activation_rect.width() - 36.0).max(540.0);
+        let device_width = 176.0;
+        let button_width = 132.0;
+        let gap = 10.0;
+        let token_width = (inner_width - device_width - button_width - gap * 2.0).max(210.0);
+        let token_field = Rect::from_min_max(
+            egui::pos2(activation_rect.left() + 18.0, edit_top),
+            egui::pos2(activation_rect.left() + 18.0 + token_width, edit_top + 34.0),
+        );
+        let token_edit = token_field.shrink2(egui::vec2(10.0, 5.0));
+        let device_field = Rect::from_min_max(
+            egui::pos2(token_field.right() + gap, edit_top),
+            egui::pos2(token_field.right() + gap + device_width, edit_top + 34.0),
+        );
+        let device_edit = device_field.shrink2(egui::vec2(10.0, 5.0));
+        let activate_button = Rect::from_min_max(
+            egui::pos2(device_field.right() + gap, edit_top),
+            egui::pos2(activation_rect.right() - 18.0, edit_top + 34.0),
+        );
+
+        let log_source = if log_source_recovery {
+            let rect = Rect::from_min_max(
+                egui::pos2(CONTENT_MARGIN, next_top),
+                egui::pos2(content_right, next_top + LOG_SOURCE_HEIGHT),
+            );
+            next_top = rect.bottom() + 16.0;
+            Some(rect)
+        } else {
+            None
+        };
+
+        let logs_card = Rect::from_min_max(
+            egui::pos2(CONTENT_MARGIN, next_top),
+            egui::pos2(content_right, WINDOW_HEIGHT - CONTENT_MARGIN),
+        );
+        let debug_toggle = Rect::from_min_max(
+            egui::pos2(logs_card.right() - 14.0 - DEBUG_TOGGLE_WIDTH, logs_card.top() + 13.0),
+            egui::pos2(logs_card.right() - 14.0, logs_card.top() + 13.0 + LOG_ACTION_HEIGHT),
+        );
+        let copy_logs = Rect::from_min_max(
+            egui::pos2(debug_toggle.left() - LOG_ACTION_GAP - COPY_LOGS_WIDTH, debug_toggle.top()),
+            egui::pos2(debug_toggle.left() - LOG_ACTION_GAP, debug_toggle.bottom()),
+        );
+        let update_button = Rect::from_min_max(
+            egui::pos2(copy_logs.left() - LOG_ACTION_GAP - UPDATE_BUTTON_WIDTH, copy_logs.top()),
+            egui::pos2(copy_logs.left() - LOG_ACTION_GAP, copy_logs.bottom()),
+        );
+        let diagnostics_right = if update_available {
+            update_button.left() - 8.0
+        } else {
+            copy_logs.left() - 8.0
+        };
+        let diagnostics_summary = Rect::from_min_max(
+            egui::pos2(logs_card.left() + 178.0, copy_logs.top()),
+            egui::pos2(diagnostics_right, copy_logs.bottom()),
+        );
+        let logs_view = Rect::from_min_max(
+            egui::pos2(logs_card.left() + 14.0, logs_card.top() + 52.0),
+            egui::pos2(logs_card.right() - 14.0, logs_card.bottom() - 14.0),
+        );
+
+        Self {
+            title_bar,
+            window_minimize,
+            window_close,
+            hero,
+            activation,
+            token_field,
+            token_edit,
+            device_field,
+            device_edit,
+            activate_button,
+            log_source,
+            logs_card,
+            logs_view,
+            copy_logs,
+            debug_toggle,
+            update_button,
+            diagnostics_summary,
+        }
+    }
 }
 
 struct PortableDesktop {
@@ -275,16 +429,19 @@ impl PortableDesktop {
         }
     }
 
-    fn handle_window_close(&self, _context: &egui::Context) {
+    fn handle_window_close(&self, context: &egui::Context) {
         #[cfg(target_os = "macos")]
         {
-            let close_requested = _context.input(|input| input.viewport().close_requested());
+            let close_requested = context.input(|input| input.viewport().close_requested());
 
             if close_requested && !self.exit_requested {
-                _context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 macos_native::hide_application();
             }
         }
+
+        #[cfg(not(target_os = "macos"))]
+        let _ = context;
     }
 
     fn copy_selected_log(&self, context: &egui::Context) {
@@ -294,209 +451,231 @@ impl PortableDesktop {
         }
     }
 
-    fn draw_header(&self, ui: &mut egui::Ui, _context: &egui::Context) {
-        let _header = ui.horizontal(|ui| {
-            egui::Frame::new()
-                .fill(SURFACE)
-                .stroke(Stroke::new(1.0_f32, LINE))
-                .corner_radius(18)
-                .inner_margin(2)
-                .show(ui, |ui| {
-                    draw_mascot(ui, 40.0);
-                });
+    fn draw_header(&self, ui: &mut egui::Ui, context: &egui::Context, layout: PortableLayout) {
+        let icon = Rect::from_min_max(egui::pos2(22.0, 12.0), egui::pos2(66.0, 56.0));
+        paint_card(ui, icon, 18, SURFACE, LINE);
+        paint_mascot(ui, icon.shrink(2.0));
 
-            ui.add_space(8.0);
-
-            ui.vertical(|ui| {
-                ui.label(RichText::new("MNEMOS").size(11.0).color(ACCENT).strong());
-                ui.label(RichText::new("Collector").size(22.0).color(TEXT).strong());
-            });
-
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                #[cfg(target_os = "macos")]
-                {
-                    if window_button(ui, "×", true).clicked() {
-                        macos_native::hide_application();
-                    }
-
-                    if window_button(ui, "—", false).clicked() {
-                        _context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                    }
-                }
-
-                #[cfg(not(target_os = "macos"))]
-                ui.label(
-                    RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                        .size(12.0)
-                        .color(TEXT_MUTED),
-                );
-            });
-        });
+        paint_text(
+            ui,
+            egui::pos2(78.0, 14.0),
+            Align2::LEFT_TOP,
+            "MNEMOS",
+            11.0,
+            ACCENT,
+        );
+        paint_text(
+            ui,
+            egui::pos2(78.0, 35.0),
+            Align2::LEFT_TOP,
+            "Collector",
+            22.0,
+            TEXT,
+        );
 
         #[cfg(target_os = "macos")]
         {
-            let drag = ui.interact(
-                _header.response.rect,
-                ui.id().with("mnemos-window-drag"),
-                Sense::drag(),
+            let drag_rect = Rect::from_min_max(
+                layout.title_bar.min,
+                egui::pos2(layout.window_minimize.left() - 8.0, layout.title_bar.bottom()),
             );
+            let drag = ui.interact(drag_rect, ui.id().with("mnemos-window-drag"), Sense::drag());
 
             if drag.drag_started() {
-                _context.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                context.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+
+            if window_button(ui, layout.window_minimize, "—", false).clicked() {
+                context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
+
+            if window_button(ui, layout.window_close, "×", true).clicked() {
+                macos_native::hide_application();
             }
         }
     }
 
-    fn draw_hero(&self, ui: &mut egui::Ui, runtime: &RuntimeSnapshot) {
+    fn draw_hero(&self, ui: &mut egui::Ui, runtime: &RuntimeSnapshot, layout: PortableLayout) {
         let (title, detail, status_color) = status_copy(self.provisioned, runtime);
-        let response = card_frame(24).show(ui, |ui| {
-            ui.set_min_height(122.0);
+        let rect = layout.hero;
 
-            ui.horizontal_top(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("СТАТУС").size(11.0).color(ACCENT).strong());
-                    ui.label(RichText::new(title).size(27.0).color(status_color).strong());
-                    ui.label(RichText::new(detail).size(13.0).color(TEXT_SECONDARY));
-                });
+        paint_card(ui, rect, CARD_RADIUS, SURFACE, LINE);
 
-                ui.with_layout(egui::Layout::right_to_left(Align::TOP), |ui| {
-                    draw_mascot(ui, 48.0);
-                });
-            });
-
-            ui.add_space(12.0);
-
-            ui.columns(3, |columns| {
-                status_tile(
-                    &mut columns[0],
-                    "ИГРА",
-                    if runtime.cristalix_running {
-                        "Cristalix"
-                    } else {
-                        "Ожидание"
-                    },
-                    if runtime.cristalix_running {
-                        POSITIVE
-                    } else {
-                        TEXT_MUTED
-                    },
-                );
-                status_tile(
-                    &mut columns[1],
-                    "РЕЖИМ",
-                    game_mode_label(runtime.game_mode.as_str()),
-                    if is_master_sword(runtime.game_mode.as_str()) {
-                        ACCENT
-                    } else {
-                        WARNING
-                    },
-                );
-                status_tile(
-                    &mut columns[2],
-                    "MNEMOS",
-                    if runtime.realtime_connected {
-                        "Подключён"
-                    } else {
-                        "Нет связи"
-                    },
-                    if runtime.realtime_connected {
-                        POSITIVE
-                    } else {
-                        DANGER
-                    },
-                );
-            });
-        });
-
-        let rect = response.response.rect;
-        let accent_rect = egui::Rect::from_min_max(
+        let accent_rect = Rect::from_min_max(
             egui::pos2(rect.left() + 1.0, rect.top() + 24.0),
             egui::pos2(rect.left() + 4.0, rect.top() + 82.0),
         );
-        ui.painter().rect_filled(accent_rect, 2.0, status_color);
+        ui.painter().rect_filled(accent_rect, 2, status_color);
+
+        paint_text(
+            ui,
+            egui::pos2(rect.left() + 20.0, rect.top() + 14.0),
+            Align2::LEFT_TOP,
+            "СТАТУС",
+            11.0,
+            ACCENT,
+        );
+        paint_text(
+            ui,
+            egui::pos2(rect.left() + 20.0, rect.top() + 35.0),
+            Align2::LEFT_TOP,
+            title,
+            27.0,
+            status_color,
+        );
+        paint_text(
+            ui,
+            egui::pos2(rect.left() + 20.0, rect.top() + 71.0),
+            Align2::LEFT_TOP,
+            detail,
+            13.0,
+            TEXT_SECONDARY,
+        );
+
+        let mascot = Rect::from_min_size(
+            egui::pos2(rect.right() - 68.0, rect.top() + 17.0),
+            egui::vec2(48.0, 48.0),
+        );
+        paint_mascot(ui, mascot);
+        self.draw_status_tiles(ui, runtime, rect);
     }
 
-    fn draw_activation(&mut self, ui: &mut egui::Ui) {
-        egui::Frame::new()
-            .fill(SURFACE)
-            .stroke(Stroke::new(1.0_f32, LINE))
-            .corner_radius(24)
-            .inner_margin(18)
-            .show(ui, |ui| {
-                ui.set_min_height(98.0);
+    fn draw_status_tiles(&self, ui: &mut egui::Ui, runtime: &RuntimeSnapshot, hero: Rect) {
+        let gap = 8.0;
+        let left = hero.left() + 20.0;
+        let right = hero.right() - 20.0;
+        let available = right - left;
+        let tile_width = (available - gap * 2.0) / 3.0;
+        let bottom = hero.bottom() - STATUS_TILE_BOTTOM_MARGIN;
+        let top = bottom - STATUS_TILE_HEIGHT;
 
-                ui.label(
-                    RichText::new(if self.current_installation {
-                        "Подключить Collector"
-                    } else {
-                        "Установить Collector"
-                    })
-                    .size(19.0)
-                    .color(TEXT)
-                    .strong(),
-                );
-                ui.add_space(8.0);
+        let game = Rect::from_min_max(
+            egui::pos2(left, top),
+            egui::pos2(left + tile_width, bottom),
+        );
+        let mode = Rect::from_min_max(
+            egui::pos2(game.right() + gap, top),
+            egui::pos2(game.right() + gap + tile_width, bottom),
+        );
+        let mnemos = Rect::from_min_max(
+            egui::pos2(mode.right() + gap, top),
+            egui::pos2(right, bottom),
+        );
 
-                let gap = 10.0;
-                let device_width = 176.0;
-                let button_width = 132.0;
-                let available_width = ui.available_width();
-                let token_width =
-                    (available_width - device_width - button_width - gap * 2.0).max(210.0);
+        draw_status_tile(
+            ui,
+            game,
+            "ИГРА",
+            if runtime.cristalix_running {
+                "Cristalix"
+            } else {
+                "Ожидание"
+            },
+            if runtime.cristalix_running {
+                POSITIVE
+            } else {
+                TEXT_MUTED
+            },
+        );
+        draw_status_tile(
+            ui,
+            mode,
+            "РЕЖИМ",
+            game_mode_label(runtime.game_mode.as_str()),
+            if is_master_sword(runtime.game_mode.as_str()) {
+                ACCENT
+            } else {
+                WARNING
+            },
+        );
+        draw_status_tile(
+            ui,
+            mnemos,
+            "MNEMOS",
+            if runtime.realtime_connected {
+                "Подключён"
+            } else {
+                "Нет связи"
+            },
+            if runtime.realtime_connected {
+                POSITIVE
+            } else {
+                DANGER
+            },
+        );
+    }
 
-                ui.horizontal_top(|ui| {
-                    ui.set_width(available_width);
+    fn draw_activation(&mut self, ui: &mut egui::Ui, layout: PortableLayout) {
+        let Some(activation) = layout.activation else {
+            return;
+        };
 
-                    ui.vertical(|ui| {
-                        ui.set_width(token_width);
-                        ui.label(RichText::new("Код активации").size(11.0).color(TEXT_MUTED));
-                        ui.add_enabled_ui(!self.provisioning, |ui| {
-                            styled_text_edit(
-                                ui,
-                                &mut self.activation_token,
-                                token_width,
-                                true,
-                                Some("Одноразовый код"),
-                            );
-                        });
-                    });
+        paint_card(ui, activation, CARD_RADIUS, SURFACE, LINE);
+        paint_text(
+            ui,
+            egui::pos2(activation.left() + 18.0, activation.top() + 14.0),
+            Align2::LEFT_TOP,
+            if self.current_installation {
+                "Подключить Collector"
+            } else {
+                "Установить Collector"
+            },
+            19.0,
+            TEXT,
+        );
+        paint_text(
+            ui,
+            egui::pos2(activation.left() + 18.0, activation.top() + 47.0),
+            Align2::LEFT_TOP,
+            "Код активации",
+            11.0,
+            TEXT_MUTED,
+        );
+        paint_text(
+            ui,
+            egui::pos2(layout.device_field.left(), activation.top() + 47.0),
+            Align2::LEFT_TOP,
+            "Устройство",
+            11.0,
+            TEXT_MUTED,
+        );
 
-                    ui.add_space(gap - ui.spacing().item_spacing.x);
+        paint_card(ui, layout.token_field, 17, SURFACE_RAISED, LINE_STRONG);
+        paint_card(ui, layout.device_field, 17, SURFACE_RAISED, LINE_STRONG);
 
-                    ui.vertical(|ui| {
-                        ui.set_width(device_width);
-                        ui.label(RichText::new("Устройство").size(11.0).color(TEXT_MUTED));
-                        ui.add_enabled_ui(!self.provisioning, |ui| {
-                            styled_text_edit(ui, &mut self.device_name, device_width, false, None);
-                        });
-                    });
+        let token_edit = egui::TextEdit::singleline(&mut self.activation_token)
+            .password(true)
+            .frame(false)
+            .hint_text("Одноразовый код");
+        ui.put(layout.token_edit, token_edit);
 
-                    ui.add_space(gap - ui.spacing().item_spacing.x);
+        let device_edit = egui::TextEdit::singleline(&mut self.device_name).frame(false);
+        ui.put(layout.device_edit, device_edit);
 
-                    ui.vertical(|ui| {
-                        ui.set_width(button_width);
-                        ui.add_space(18.0);
+        let label = if self.provisioning {
+            "Подключаем..."
+        } else {
+            "Активировать"
+        };
+        let button = primary_button_widget(label, self.provisioning);
+        let response = ui.add_enabled_ui(!self.provisioning, |ui| {
+            ui.put(layout.activate_button, button)
+        });
 
-                        let button_text = if self.provisioning {
-                            "Подключаем..."
-                        } else {
-                            "Активировать"
-                        };
-                        let activate =
-                            primary_button(ui, button_text, button_width, self.provisioning)
-                                .clicked();
+        if response.inner.clicked() {
+            self.begin_activation();
+        }
 
-                        if activate {
-                            self.begin_activation();
-                        }
-                    });
-                });
-
-                if let Some(error) = self.activation_error.as_deref() {
-                    ui.add_space(6.0);
-                    ui.colored_label(DANGER, error);
-                }
-            });
+        if let Some(error) = self.activation_error.as_deref() {
+            paint_text(
+                ui,
+                egui::pos2(activation.left() + 18.0, activation.bottom() - 23.0),
+                Align2::LEFT_TOP,
+                error,
+                11.0,
+                DANGER,
+            );
+        }
     }
 
     fn should_draw_log_source(&self, runtime: &RuntimeSnapshot) -> bool {
@@ -507,7 +686,7 @@ impl PortableDesktop {
         )
     }
 
-    fn draw_log_source(&mut self, ui: &mut egui::Ui, runtime: &RuntimeSnapshot) {
+    fn draw_log_source(&mut self, ui: &mut egui::Ui, runtime: &RuntimeSnapshot, rect: Rect) {
         let configured_path = configured_latest_log_path();
         let active_path = runtime.log_path.as_deref();
         let source_text = if let Some(path) = configured_path.as_deref() {
@@ -518,45 +697,72 @@ impl PortableDesktop {
             "Автопоиск: лог пока не найден".to_owned()
         };
 
-        card_frame(18).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("ЛОГ CRISTALIX").size(10.0).color(ACCENT).strong());
-                    ui.label(RichText::new(source_text).size(12.0).color(TEXT_SECONDARY));
-                });
+        paint_card(ui, rect, 18, SURFACE, LINE);
+        paint_text(
+            ui,
+            egui::pos2(rect.left() + 16.0, rect.top() + 12.0),
+            Align2::LEFT_TOP,
+            "ЛОГ CRISTALIX",
+            10.0,
+            ACCENT,
+        );
+        paint_text(
+            ui,
+            egui::pos2(rect.left() + 16.0, rect.top() + 33.0),
+            Align2::LEFT_TOP,
+            &source_text,
+            12.0,
+            TEXT_SECONDARY,
+        );
 
-                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    #[cfg(target_os = "macos")]
-                    if secondary_button(ui, "Выбрать файл…", 124.0).clicked() {
-                        self.select_macos_log_file();
-                    }
+        let mut right = rect.right() - 14.0;
 
-                    if configured_path.is_some()
-                        && secondary_button(ui, "Автопоиск", 104.0).clicked()
-                    {
-                        match clear_configured_latest_log_path() {
-                            Ok(()) => {
-                                self.log_source_error = None;
-                                diagnostics::info(
-                                    "cristalix",
-                                    "Manual Cristalix log source cleared; automatic discovery enabled",
-                                );
-                            }
-                            Err(error) => {
-                                self.log_source_error = Some(format!(
-                                    "Не удалось вернуть автопоиск: {error}"
-                                ));
-                            }
-                        }
-                    }
-                });
-            });
+        #[cfg(target_os = "macos")]
+        {
+            let choose = Rect::from_min_max(
+                egui::pos2(right - 124.0, rect.top() + 17.0),
+                egui::pos2(right, rect.top() + 47.0),
+            );
+            right = choose.left() - 10.0;
 
-            if let Some(error) = self.log_source_error.as_deref() {
-                ui.add_space(4.0);
-                ui.colored_label(DANGER, error);
+            if ui.put(choose, secondary_button_widget("Выбрать файл…")).clicked() {
+                self.select_macos_log_file();
             }
-        });
+        }
+
+        if configured_path.is_some() {
+            let auto = Rect::from_min_max(
+                egui::pos2(right - 104.0, rect.top() + 17.0),
+                egui::pos2(right, rect.top() + 47.0),
+            );
+
+            if ui.put(auto, secondary_button_widget("Автопоиск")).clicked() {
+                match clear_configured_latest_log_path() {
+                    Ok(()) => {
+                        self.log_source_error = None;
+                        diagnostics::info(
+                            "cristalix",
+                            "Manual Cristalix log source cleared; automatic discovery enabled",
+                        );
+                    }
+                    Err(error) => {
+                        self.log_source_error =
+                            Some(format!("Не удалось вернуть автопоиск: {error}"));
+                    }
+                }
+            }
+        }
+
+        if let Some(error) = self.log_source_error.as_deref() {
+            paint_text(
+                ui,
+                egui::pos2(rect.left() + 420.0, rect.top() + 33.0),
+                Align2::LEFT_TOP,
+                error,
+                11.0,
+                DANGER,
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -587,102 +793,121 @@ impl PortableDesktop {
         ui: &mut egui::Ui,
         context: &egui::Context,
         runtime: &RuntimeSnapshot,
+        layout: PortableLayout,
     ) {
-        #[cfg(target_os = "macos")]
-        let reserved_footer = FOOTER_HEIGHT;
-        #[cfg(not(target_os = "macos"))]
-        let reserved_footer = 0.0;
+        paint_card(ui, layout.logs_card, CARD_RADIUS, SURFACE, LINE);
+        paint_text(
+            ui,
+            egui::pos2(layout.logs_card.left() + 16.0, layout.logs_card.top() + 15.0),
+            Align2::LEFT_TOP,
+            "Журнал",
+            19.0,
+            TEXT,
+        );
 
-        let desired_height = (ui.available_height() - reserved_footer).max(180.0);
+        let summary = diagnostics_summary(runtime);
+        paint_text_clipped(
+            ui,
+            layout.diagnostics_summary,
+            &summary,
+            11.0,
+            if runtime.required_update_version.is_some() {
+                DANGER
+            } else {
+                TEXT_MUTED
+            },
+        );
 
-        egui::Frame::new()
-            .fill(SURFACE)
-            .stroke(Stroke::new(1.0_f32, LINE))
-            .corner_radius(24)
-            .inner_margin(14)
-            .show(ui, |ui| {
-                ui.set_min_height((desired_height - 30.0).max(150.0));
+        if let Some(version) = runtime.available_update_version.as_deref() {
+            let busy = runtime.update_installing || runtime.update_waiting_for_slot;
+            let label = if runtime.update_installing {
+                "УСТАНОВКА...".to_owned()
+            } else if runtime.update_waiting_for_slot {
+                "ОЖИДАНИЕ СЛОТА...".to_owned()
+            } else {
+                format!("ОБНОВИТЬ ДО v{version}")
+            };
 
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Журнал").size(19.0).color(TEXT).strong());
+            let response = ui.add_enabled_ui(!busy, |ui| {
+                ui.put(layout.update_button, update_button_widget(&label, busy))
+            });
 
-                    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                        if toggle_button(ui, "Диагностика", diagnostics::debug_enabled(), 154.0)
-                            .clicked()
-                        {
-                            diagnostics::set_debug_enabled(!diagnostics::debug_enabled());
+            if response.inner.clicked() && !busy {
+                diagnostics::request_update_install();
+            }
+        }
+
+        if ui
+            .put(layout.copy_logs, secondary_button_widget("Копировать всё"))
+            .clicked()
+        {
+            context.copy_text(diagnostics::recent_text());
+            diagnostics::info("desktop", "Journal copied to clipboard as text");
+        }
+
+        if ui
+            .put(
+                layout.debug_toggle,
+                toggle_button_widget("Диагностика", diagnostics::debug_enabled()),
+            )
+            .clicked()
+        {
+            diagnostics::set_debug_enabled(!diagnostics::debug_enabled());
+        }
+
+        paint_card(ui, layout.logs_view, 18, LOG_SURFACE, LINE);
+        let log_text = diagnostics::recent_text();
+
+        if let Some(selected) = self.selected_log_entry.as_ref()
+            && !log_text.lines().any(|line| line == selected)
+        {
+            self.selected_log_entry = None;
+        }
+
+        let log_content = layout.logs_view.shrink2(egui::vec2(10.0, 8.0));
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(log_content)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+            |ui| {
+                ui.set_clip_rect(log_content);
+                ui.spacing_mut().item_spacing.y = 0.0;
+
+                egui::ScrollArea::vertical()
+                    .id_salt("mnemos-journal-scroll")
+                    .auto_shrink([false, false])
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        ui.set_min_width(log_content.width());
+
+                        if log_text.is_empty() {
+                            ui.label(
+                                RichText::new("Журнал пока пуст.")
+                                    .size(12.0)
+                                    .color(TEXT_MUTED),
+                            );
                         }
 
-                        if secondary_button(ui, "Копировать всё", 156.0).clicked() {
-                            context.copy_text(diagnostics::recent_text());
-                            diagnostics::info("desktop", "Journal copied to clipboard as text");
-                        }
+                        for line in log_text.lines() {
+                            let selected = self.selected_log_entry.as_deref() == Some(line);
+                            let text = RichText::new(line)
+                                .monospace()
+                                .size(11.5)
+                                .color(log_line_color(line));
+                            let response = ui.add_sized(
+                                [ui.available_width(), 18.0],
+                                egui::Button::new(text)
+                                    .selected(selected)
+                                    .frame(selected),
+                            );
 
-                        if let Some(version) = runtime.available_update_version.as_deref() {
-                            let busy = runtime.update_installing || runtime.update_waiting_for_slot;
-                            let label = if runtime.update_installing {
-                                "Установка...".to_owned()
-                            } else if runtime.update_waiting_for_slot {
-                                "Ожидание слота...".to_owned()
-                            } else {
-                                format!("Обновить до v{version}")
-                            };
-
-                            if update_button(ui, &label, busy).clicked() && !busy {
-                                diagnostics::request_update_install();
+                            if response.clicked() {
+                                self.selected_log_entry = Some(line.to_owned());
                             }
                         }
-
-                        let summary = diagnostics_summary(runtime);
-                        ui.label(RichText::new(summary).size(11.0).color(TEXT_MUTED));
                     });
-                });
-
-                ui.add_space(7.0);
-
-                let log_text = diagnostics::recent_text();
-
-                if let Some(selected) = self.selected_log_entry.as_ref()
-                    && !log_text.lines().any(|line| line == selected)
-                {
-                    self.selected_log_entry = None;
-                }
-
-                egui::Frame::new()
-                    .fill(LOG_SURFACE)
-                    .stroke(Stroke::new(1.0_f32, LINE))
-                    .corner_radius(18)
-                    .inner_margin(10)
-                    .show(ui, |ui| {
-                        ui.set_min_height((ui.available_height() - 2.0).max(120.0));
-
-                        egui::ScrollArea::vertical()
-                            .auto_shrink([false, false])
-                            .stick_to_bottom(true)
-                            .show(ui, |ui| {
-                                if log_text.is_empty() {
-                                    ui.label(
-                                        RichText::new("Журнал пока пуст.")
-                                            .size(12.0)
-                                            .color(TEXT_MUTED),
-                                    );
-                                }
-
-                                for line in log_text.lines() {
-                                    let selected = self.selected_log_entry.as_deref() == Some(line);
-                                    let text = RichText::new(line)
-                                        .monospace()
-                                        .size(11.5)
-                                        .color(log_line_color(line));
-                                    let response = ui.selectable_label(selected, text);
-
-                                    if response.clicked() {
-                                        self.selected_log_entry = Some(line.to_owned());
-                                    }
-                                }
-                            });
-                    });
-            });
+            },
+        );
 
         let copy_pressed =
             context.input(|input| input.modifiers.command && input.key_pressed(egui::Key::C));
@@ -692,15 +917,15 @@ impl PortableDesktop {
         }
     }
 
-    #[cfg(target_os = "macos")]
     fn draw_footer(&self, ui: &mut egui::Ui) {
-        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-            ui.label(
-                RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                    .size(12.0)
-                    .color(TEXT_MUTED),
-            );
-        });
+        paint_text(
+            ui,
+            egui::pos2(WINDOW_WIDTH - CONTENT_MARGIN, WINDOW_HEIGHT - 8.0),
+            Align2::RIGHT_BOTTOM,
+            &format!("v{}", env!("CARGO_PKG_VERSION")),
+            12.0,
+            TEXT_MUTED,
+        );
     }
 }
 
@@ -711,28 +936,26 @@ impl eframe::App for PortableDesktop {
         context.request_repaint_after(REFRESH_INTERVAL);
 
         let runtime = diagnostics::runtime_snapshot();
+        let show_log_source = self.should_draw_log_source(&runtime);
+        let layout = PortableLayout::new(
+            self.provisioned,
+            show_log_source,
+            runtime.available_update_version.is_some(),
+        );
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(22))
+            .frame(egui::Frame::new().fill(BACKGROUND).inner_margin(0))
             .show(context, |ui| {
-                self.draw_header(ui, context);
-                ui.add_space(12.0);
-                self.draw_hero(ui, &runtime);
-                ui.add_space(16.0);
+                ui.set_min_size(egui::vec2(WINDOW_WIDTH, WINDOW_HEIGHT));
+                self.draw_header(ui, context, layout);
+                self.draw_hero(ui, &runtime, layout);
+                self.draw_activation(ui, layout);
 
-                if !self.provisioned {
-                    self.draw_activation(ui);
-                    ui.add_space(16.0);
+                if let Some(log_source) = layout.log_source {
+                    self.draw_log_source(ui, &runtime, log_source);
                 }
 
-                if self.should_draw_log_source(&runtime) {
-                    self.draw_log_source(ui, &runtime);
-                    ui.add_space(16.0);
-                }
-
-                self.draw_journal(ui, context, &runtime);
-
-                #[cfg(target_os = "macos")]
+                self.draw_journal(ui, context, &runtime, layout);
                 self.draw_footer(ui);
             });
     }
@@ -750,13 +973,13 @@ fn configure_style(context: &egui::Context) {
     visuals.extreme_bg_color = LOG_SURFACE;
     visuals.faint_bg_color = SURFACE;
     visuals.widgets.noninteractive.bg_fill = SURFACE;
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, LINE);
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, LINE);
     visuals.widgets.inactive.bg_fill = SURFACE;
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, LINE);
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, LINE);
     visuals.widgets.hovered.bg_fill = SURFACE_RAISED;
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, LINE_STRONG);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, LINE_STRONG);
     visuals.widgets.active.bg_fill = ACCENT_DIM;
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, ACCENT);
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT);
     visuals.selection.bg_fill = ACCENT_DIM;
     visuals.selection.stroke.color = ACCENT;
     visuals.override_text_color = Some(TEXT);
@@ -766,107 +989,110 @@ fn configure_style(context: &egui::Context) {
     context.style_mut(|style| {
         style.spacing.item_spacing = egui::vec2(10.0, 7.0);
         style.spacing.button_padding = egui::vec2(12.0, 7.0);
-        style.spacing.interact_size.y = 32.0;
+        style.spacing.interact_size.y = 30.0;
     });
 }
 
-fn card_frame(radius: u8) -> egui::Frame {
-    egui::Frame::new()
-        .fill(SURFACE)
-        .stroke(Stroke::new(1.0_f32, LINE))
-        .corner_radius(radius)
-        .inner_margin(16)
+fn paint_card(
+    ui: &egui::Ui,
+    rect: Rect,
+    radius: u8,
+    fill: Color32,
+    stroke_color: Color32,
+) {
+    ui.painter().rect(
+        rect,
+        radius,
+        fill,
+        Stroke::new(1.0, stroke_color),
+        StrokeKind::Inside,
+    );
 }
 
-fn styled_text_edit(
-    ui: &mut egui::Ui,
-    value: &mut String,
-    width: f32,
-    password: bool,
-    hint: Option<&str>,
-) -> egui::Response {
-    egui::Frame::new()
-        .fill(SURFACE_RAISED)
-        .stroke(Stroke::new(1.0_f32, LINE_STRONG))
-        .corner_radius(17)
-        .inner_margin(egui::Margin::symmetric(10, 5))
-        .show(ui, |ui| {
-            let mut edit = egui::TextEdit::singleline(value)
-                .frame(false)
-                .desired_width((width - 20.0).max(40.0));
-
-            if password {
-                edit = edit.password(true);
-            }
-
-            if let Some(hint) = hint {
-                edit = edit.hint_text(hint);
-            }
-
-            ui.add_sized([(width - 20.0).max(40.0), 24.0], edit)
-        })
-        .inner
+fn paint_text(
+    ui: &egui::Ui,
+    position: egui::Pos2,
+    anchor: Align2,
+    value: &str,
+    size: f32,
+    color: Color32,
+) {
+    ui.painter().text(
+        position,
+        anchor,
+        value,
+        FontId::proportional(size),
+        color,
+    );
 }
 
-fn primary_button(ui: &mut egui::Ui, label: &str, width: f32, disabled: bool) -> egui::Response {
+fn paint_text_clipped(
+    ui: &egui::Ui,
+    rect: Rect,
+    value: &str,
+    size: f32,
+    color: Color32,
+) {
+    let painter = ui.painter().with_clip_rect(rect);
+    painter.text(
+        egui::pos2(rect.left(), rect.center().y),
+        Align2::LEFT_CENTER,
+        value,
+        FontId::proportional(size),
+        color,
+    );
+}
+
+fn primary_button_widget(label: &str, disabled: bool) -> egui::Button<'_> {
     let fill = if disabled { ACCENT_DIM } else { ACCENT };
     let text = if disabled { TEXT_SECONDARY } else { BACKGROUND };
     let border = if disabled { ACCENT_DIM } else { ACCENT };
 
-    ui.add_sized(
-        [width, 34.0],
-        egui::Button::new(RichText::new(label).size(13.0).color(text).strong())
-            .fill(fill)
-            .stroke(Stroke::new(1.0_f32, border))
-            .corner_radius(17),
-    )
+    egui::Button::new(RichText::new(label).size(13.0).color(text).strong())
+        .fill(fill)
+        .stroke(Stroke::new(1.0, border))
+        .corner_radius(17)
 }
 
-fn secondary_button(ui: &mut egui::Ui, label: &str, width: f32) -> egui::Response {
-    ui.add_sized(
-        [width, 30.0],
-        egui::Button::new(RichText::new(label).size(12.0).color(TEXT_SECONDARY))
-            .fill(SURFACE)
-            .stroke(Stroke::new(1.0_f32, LINE))
-            .corner_radius(15),
-    )
+fn secondary_button_widget(label: &str) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(label).size(12.0).color(TEXT_SECONDARY))
+        .fill(SURFACE)
+        .stroke(Stroke::new(1.0, LINE))
+        .corner_radius(15)
 }
 
-fn toggle_button(ui: &mut egui::Ui, label: &str, enabled: bool, width: f32) -> egui::Response {
+fn toggle_button_widget(label: &str, enabled: bool) -> egui::Button<'_> {
     let fill = if enabled { ACCENT_DIM } else { SURFACE_RAISED };
     let border = if enabled { ACCENT } else { LINE };
     let dot = if enabled { "●" } else { "○" };
-    let text = format!("{dot}  {label}");
 
-    ui.add_sized(
-        [width, 30.0],
-        egui::Button::new(RichText::new(text).size(12.0).color(TEXT_SECONDARY))
-            .fill(fill)
-            .stroke(Stroke::new(1.0_f32, border))
-            .corner_radius(15),
+    egui::Button::new(
+        RichText::new(format!("{dot}  {label}"))
+            .size(12.0)
+            .color(TEXT_SECONDARY),
     )
+    .fill(fill)
+    .stroke(Stroke::new(1.0, border))
+    .corner_radius(15)
 }
 
-fn update_button(ui: &mut egui::Ui, label: &str, disabled: bool) -> egui::Response {
+fn update_button_widget(label: &str, disabled: bool) -> egui::Button<'_> {
     let fill = if disabled { SURFACE_RAISED } else { ACCENT_DIM };
     let border = if disabled { LINE_STRONG } else { ACCENT };
     let text = if disabled { TEXT_MUTED } else { ACCENT };
 
-    ui.add_sized(
-        [184.0, 30.0],
-        egui::Button::new(RichText::new(label).size(12.0).color(text).strong())
-            .fill(fill)
-            .stroke(Stroke::new(1.0_f32, border))
-            .corner_radius(15),
-    )
+    egui::Button::new(RichText::new(label).size(12.0).color(text).strong())
+        .fill(fill)
+        .stroke(Stroke::new(1.0, border))
+        .corner_radius(15)
 }
 
 #[cfg(target_os = "macos")]
-fn window_button(ui: &mut egui::Ui, label: &str, danger: bool) -> egui::Response {
+fn window_button(ui: &mut egui::Ui, rect: Rect, label: &str, danger: bool) -> egui::Response {
     let text = if danger { DANGER } else { TEXT_SECONDARY };
 
-    ui.add_sized(
-        [38.0, 34.0],
+    ui.put(
+        rect,
         egui::Button::new(RichText::new(label).size(18.0).color(text))
             .fill(BACKGROUND)
             .stroke(Stroke::NONE)
@@ -874,23 +1100,35 @@ fn window_button(ui: &mut egui::Ui, label: &str, danger: bool) -> egui::Response
     )
 }
 
-fn status_tile(ui: &mut egui::Ui, label: &str, value: &str, color: Color32) {
-    egui::Frame::new()
-        .fill(SURFACE_RAISED)
-        .stroke(Stroke::new(1.0_f32, LINE))
-        .corner_radius(18)
-        .inner_margin(10)
-        .show(ui, |ui| {
-            ui.set_min_height(46.0);
-
-            ui.horizontal(|ui| {
-                let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(7.0, 7.0), Sense::hover());
-                ui.painter().circle_filled(dot_rect.center(), 3.5, color);
-                ui.label(RichText::new(label).size(10.0).color(TEXT_MUTED).strong());
-            });
-
-            ui.label(RichText::new(value).size(13.0).color(TEXT).strong());
-        });
+fn draw_status_tile(
+    ui: &egui::Ui,
+    rect: Rect,
+    label: &str,
+    value: &str,
+    status_color: Color32,
+) {
+    paint_card(ui, rect, 18, SURFACE_RAISED, LINE);
+    ui.painter().circle_filled(
+        egui::pos2(rect.left() + 11.0, rect.top() + 10.0),
+        3.5,
+        status_color,
+    );
+    paint_text(
+        ui,
+        egui::pos2(rect.left() + 24.0, rect.top() + 5.0),
+        Align2::LEFT_TOP,
+        label,
+        10.0,
+        TEXT_MUTED,
+    );
+    paint_text(
+        ui,
+        egui::pos2(rect.left() + 12.0, rect.top() + 25.0),
+        Align2::LEFT_TOP,
+        value,
+        13.0,
+        TEXT,
+    );
 }
 
 fn status_copy(
@@ -1034,19 +1272,19 @@ fn log_line_color(line: &str) -> Color32 {
     } else if line.contains("[DEBUG]") {
         TEXT_MUTED
     } else {
-        TEXT
+        TEXT_SECONDARY
     }
 }
 
-fn draw_mascot(ui: &mut egui::Ui, size: f32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), Sense::hover());
-    let painter = ui.painter();
+fn paint_mascot(ui: &egui::Ui, rect: Rect) {
+    let size = rect.width().min(rect.height());
     let center = rect.center() + egui::vec2(0.0, size * 0.05);
     let head_radius = size * 0.31;
     let ear_width = size * 0.19;
     let ear_top = rect.top() + size * 0.08;
     let ear_base = center.y - head_radius * 0.58;
-    let transparent_stroke = Stroke::new(0.0_f32, Color32::TRANSPARENT);
+    let transparent_stroke = Stroke::new(0.0, Color32::TRANSPARENT);
+    let painter = ui.painter();
 
     painter.add(egui::Shape::convex_polygon(
         vec![
@@ -1170,6 +1408,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn portable_layout_matches_windows_geometry_when_healthy() {
+        let layout = PortableLayout::new(true, false, false);
+
+        assert_eq!(layout.hero.top(), 74.0);
+        assert_eq!(layout.hero.height(), 154.0);
+        assert_eq!(layout.logs_card.top(), 244.0);
+        assert_eq!(layout.logs_card.bottom(), 698.0);
+        assert_eq!(layout.logs_view.top(), 296.0);
+        assert_eq!(layout.logs_view.bottom(), 684.0);
+    }
+
+    #[test]
+    fn journal_actions_match_windows_widths_and_gaps() {
+        let layout = PortableLayout::new(true, false, true);
+
+        assert_eq!(layout.debug_toggle.width(), DEBUG_TOGGLE_WIDTH);
+        assert_eq!(layout.copy_logs.width(), COPY_LOGS_WIDTH);
+        assert_eq!(layout.update_button.width(), UPDATE_BUTTON_WIDTH);
+        assert_eq!(layout.debug_toggle.left() - layout.copy_logs.right(), LOG_ACTION_GAP);
+        assert_eq!(layout.copy_logs.left() - layout.update_button.right(), LOG_ACTION_GAP);
+    }
+
+    #[test]
     fn portable_icon_has_expected_dimensions() {
         let icon = portable_icon();
 
@@ -1183,7 +1444,7 @@ mod tests {
         assert_eq!(log_line_color("[ERROR] failed"), DANGER);
         assert_eq!(log_line_color("[WARN ] delayed"), WARNING);
         assert_eq!(log_line_color("[DEBUG] detail"), TEXT_MUTED);
-        assert_eq!(log_line_color("[INFO ] ready"), TEXT);
+        assert_eq!(log_line_color("[INFO ] ready"), TEXT_SECONDARY);
     }
 
     #[test]
