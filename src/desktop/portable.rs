@@ -25,6 +25,7 @@ use super::macos_native::{self, MacStatusItem};
 const WINDOW_WIDTH: f32 = 1080.0;
 const WINDOW_HEIGHT: f32 = 720.0;
 const REFRESH_INTERVAL: Duration = Duration::from_millis(500);
+#[cfg(target_os = "macos")]
 const FOOTER_HEIGHT: f32 = 18.0;
 
 const BACKGROUND: Color32 = Color32::from_rgb(0x02, 0x03, 0x02);
@@ -43,7 +44,7 @@ const WARNING: Color32 = Color32::from_rgb(0xff, 0xb3, 0x4f);
 const DANGER: Color32 = Color32::from_rgb(0xff, 0x68, 0x73);
 
 pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
-    let mut viewport = egui::ViewportBuilder::default()
+    let viewport = egui::ViewportBuilder::default()
         .with_title("Mnemos Collector")
         .with_app_id("rest.knalis.mnemos-collector")
         .with_inner_size([WINDOW_WIDTH, WINDOW_HEIGHT])
@@ -54,9 +55,7 @@ pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
         .with_icon(portable_icon());
 
     #[cfg(target_os = "macos")]
-    {
-        viewport = viewport.with_decorations(false);
-    }
+    let viewport = viewport.with_decorations(false);
 
     let options = eframe::NativeOptions {
         viewport,
@@ -295,8 +294,8 @@ impl PortableDesktop {
         }
     }
 
-    fn draw_header(&self, ui: &mut egui::Ui, context: &egui::Context) {
-        let header = ui.horizontal(|ui| {
+    fn draw_header(&self, ui: &mut egui::Ui, _context: &egui::Context) {
+        let _header = ui.horizontal(|ui| {
             egui::Frame::new()
                 .fill(SURFACE)
                 .stroke(Stroke::new(1.0_f32, LINE))
@@ -321,7 +320,7 @@ impl PortableDesktop {
                     }
 
                     if window_button(ui, "—", false).clicked() {
-                        context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        _context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                     }
                 }
 
@@ -337,13 +336,13 @@ impl PortableDesktop {
         #[cfg(target_os = "macos")]
         {
             let drag = ui.interact(
-                header.response.rect,
+                _header.response.rect,
                 ui.id().with("mnemos-window-drag"),
                 Sense::drag(),
             );
 
             if drag.drag_started() {
-                context.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                _context.send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
         }
     }
