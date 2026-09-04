@@ -1614,83 +1614,11 @@ fn log_line_color(line: &str) -> Color32 {
 }
 
 fn paint_mascot(ui: &egui::Ui, rect: Rect) {
-    let size = rect.width().min(rect.height());
-    let center = rect.center() + egui::vec2(0.0, size * 0.05);
-    let head_radius = size * 0.31;
-    let ear_width = size * 0.19;
-    let ear_top = rect.top() + size * 0.08;
-    let ear_base = center.y - head_radius * 0.58;
-    let transparent_stroke = Stroke::new(0.0_f32, Color32::TRANSPARENT);
-    let painter = ui.painter();
-
-    painter.add(egui::Shape::convex_polygon(
-        vec![
-            egui::pos2(center.x - head_radius * 0.78, ear_base),
-            egui::pos2(center.x - head_radius * 0.78 - ear_width, ear_top),
-            egui::pos2(center.x - head_radius * 0.18, ear_base - size * 0.03),
-        ],
-        ACCENT,
-        transparent_stroke,
-    ));
-    painter.add(egui::Shape::convex_polygon(
-        vec![
-            egui::pos2(center.x + head_radius * 0.78, ear_base),
-            egui::pos2(center.x + head_radius * 0.78 + ear_width, ear_top),
-            egui::pos2(center.x + head_radius * 0.18, ear_base - size * 0.03),
-        ],
-        ACCENT,
-        transparent_stroke,
-    ));
-    painter.circle_filled(center, head_radius, ACCENT);
-    painter.circle_filled(
-        center + egui::vec2(-head_radius * 0.36, -head_radius * 0.08),
-        size * 0.035,
-        BACKGROUND,
-    );
-    painter.circle_filled(
-        center + egui::vec2(head_radius * 0.36, -head_radius * 0.08),
-        size * 0.035,
-        BACKGROUND,
-    );
-    painter.add(egui::Shape::convex_polygon(
-        vec![
-            center + egui::vec2(-size * 0.04, size * 0.05),
-            center + egui::vec2(size * 0.04, size * 0.05),
-            center + egui::vec2(0.0, size * 0.11),
-        ],
-        BACKGROUND,
-        transparent_stroke,
-    ));
+    super::portable_mascot::paint(ui, rect);
 }
 
 fn portable_icon() -> egui::IconData {
-    const SIZE: usize = 32;
-    let mut rgba = vec![0_u8; SIZE * SIZE * 4];
-
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let index = (y * SIZE + x) * 4;
-            let dx = x as i32 - 16;
-            let dy = y as i32 - 17;
-            let inside_head = dx * dx + dy * dy <= 11 * 11;
-            let inside_left_ear = y < 11 && x > 5 && x < 15 && y + 3 > 12 - x / 2;
-            let inside_right_ear = y < 11 && x > 17 && x < 27 && y + 3 > x / 2 - 5;
-            let accent = inside_head || inside_left_ear || inside_right_ear;
-            let color = if accent {
-                [0xcb, 0xff, 0x2d, 255]
-            } else {
-                [0x02, 0x03, 0x02, 255]
-            };
-
-            rgba[index..index + 4].copy_from_slice(&color);
-        }
-    }
-
-    egui::IconData {
-        rgba,
-        width: SIZE as u32,
-        height: SIZE as u32,
-    }
+    super::portable_mascot::icon()
 }
 
 async fn provision_current_installation(token: &str, device_name: &str) -> Result<String> {

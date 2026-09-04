@@ -341,6 +341,7 @@ impl CollectorApplication {
         );
 
         if fresh_log {
+            diagnostics::mark_log_activity();
             diagnostics::info(
                 "cristalix",
                 "latest.log was updated within the last 60 seconds; current Cristalix session is confirmed",
