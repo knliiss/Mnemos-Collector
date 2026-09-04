@@ -27,10 +27,7 @@ pub(super) fn paint(ui: &egui::Ui, rect: Rect) {
         let top = top_offset + (mascot_rect.y as f32 * scale).round();
         let width = (mascot_rect.width as f32 * scale).round();
         let height = (mascot_rect.height as f32 * scale).round();
-        let target = Rect::from_min_size(
-            egui::pos2(left, top),
-            egui::vec2(width, height),
-        );
+        let target = Rect::from_min_size(egui::pos2(left, top), egui::vec2(width, height));
 
         ui.painter()
             .rect_filled(target, 0, color32(mascot_rect.color));
