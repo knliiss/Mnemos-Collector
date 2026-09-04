@@ -1,0 +1,42 @@
+name: Temporary Rustfmt
+
+on:
+  push:
+    branches:
+      - fix/macos-credential-recovery-ui-parity
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: fix/macos-credential-recovery-ui-parity
+
+      - name: Install Rust
+        run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt
+
+      - name: Format Rust sources
+        run: cargo fmt --all
+
+      - name: Commit formatting when needed
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet; then
+            echo "Rust sources already formatted"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add '*.rs' 'src/**/*.rs'
+          git commit -m "Format Collector credential recovery changes"
+          git push origin HEAD:fix/macos-credential-recovery-ui-parity
