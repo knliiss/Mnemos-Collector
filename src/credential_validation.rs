@@ -56,9 +56,7 @@ impl CredentialValidationClient {
 fn classify_status(status: StatusCode) -> Result<CredentialValidationStatus> {
     match status {
         StatusCode::NO_CONTENT => Ok(CredentialValidationStatus::Active),
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
-            Ok(CredentialValidationStatus::Rejected)
-        }
+        StatusCode::UNAUTHORIZED => Ok(CredentialValidationStatus::Rejected),
         status => bail!("collector credential validation returned unexpected HTTP status {status}"),
     }
 }
@@ -76,19 +74,16 @@ mod tests {
     }
 
     #[test]
-    fn treats_authentication_failures_as_rejected_credentials() {
+    fn treats_unauthorized_as_rejected_credential() {
         assert_eq!(
             classify_status(StatusCode::UNAUTHORIZED).unwrap(),
-            CredentialValidationStatus::Rejected,
-        );
-        assert_eq!(
-            classify_status(StatusCode::FORBIDDEN).unwrap(),
             CredentialValidationStatus::Rejected,
         );
     }
 
     #[test]
-    fn does_not_revoke_local_credentials_for_transient_server_failures() {
+    fn does_not_revoke_local_credentials_for_non_auth_failures() {
+        assert!(classify_status(StatusCode::FORBIDDEN).is_err());
         assert!(classify_status(StatusCode::BAD_GATEWAY).is_err());
         assert!(classify_status(StatusCode::SERVICE_UNAVAILABLE).is_err());
     }
