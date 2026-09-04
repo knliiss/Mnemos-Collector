@@ -11,10 +11,47 @@ use uuid::Uuid;
 
 use crate::diagnostics;
 
+use super::credential_id_from_access_key;
+
 const CREDENTIAL_DIRECTORY: &str = "credentials";
 const DIRECTORY_MODE: u32 = 0o700;
 const FILE_MODE: u32 = 0o600;
 const SECURITY_TOOL: &str = "/usr/bin/security";
+
+pub(super) fn load_access_key(service: &str, account: &str) -> Result<Option<String>> {
+    let path = credential_path(account)?;
+    let protected = read_protected_file(&path)?;
+    let system = load_system_value(service, account)?;
+    let selected = select_preferred_access_key(protected.as_deref(), system.as_deref())?;
+
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+
+    if protected.as_deref() != Some(selected.as_str()) {
+        persist_protected_file(&path, &selected)?;
+    }
+
+    if system.as_deref() != Some(selected.as_str()) {
+        mirror_to_keyring(service, account, &selected);
+    }
+
+    if protected.is_some()
+        && system.is_some()
+        && protected.as_deref() != system.as_deref()
+    {
+        let selected_id = credential_id_from_access_key(&selected)?;
+
+        diagnostics::warn(
+            "security",
+            format!(
+                "Reconciled divergent macOS Collector credentials; selected newest credential {selected_id}"
+            ),
+        );
+    }
+
+    Ok(Some(selected))
+}
 
 pub(super) fn load(service: &str, account: &str) -> Result<Option<String>> {
     let path = credential_path(account)?;
@@ -23,33 +60,14 @@ pub(super) fn load(service: &str, account: &str) -> Result<Option<String>> {
         return Ok(Some(value));
     }
 
-    match load_from_keyring(service, account) {
-        Ok(Some(value)) => {
-            persist_protected_file(&path, &value)?;
-            diagnostics::info(
-                "security",
-                "Migrated macOS Collector credential into upgrade-safe local storage",
-            );
-
-            return Ok(Some(value));
-        }
-        Ok(None) => {}
-        Err(error) => {
-            diagnostics::warn(
-                "security",
-                format!("Direct macOS Keychain lookup failed; trying system migration: {error:#}"),
-            );
-        }
-    }
-
-    let Some(value) = load_with_security_tool(service, account)? else {
+    let Some(value) = load_system_value(service, account)? else {
         return Ok(None);
     };
 
     persist_protected_file(&path, &value)?;
     diagnostics::info(
         "security",
-        "Recovered legacy macOS Collector credential through the system Keychain tool",
+        "Recovered macOS Collector secret into upgrade-safe local storage",
     );
 
     Ok(Some(value))
@@ -90,6 +108,48 @@ pub(super) fn delete(service: &str, account: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn load_system_value(service: &str, account: &str) -> Result<Option<String>> {
+    match load_from_keyring(service, account) {
+        Ok(Some(value)) => return Ok(Some(value)),
+        Ok(None) => {}
+        Err(error) => {
+            diagnostics::warn(
+                "security",
+                format!("Direct macOS Keychain lookup failed; trying system migration: {error:#}"),
+            );
+        }
+    }
+
+    load_with_security_tool(service, account)
+}
+
+fn select_preferred_access_key(
+    protected: Option<&str>,
+    system: Option<&str>,
+) -> Result<Option<String>> {
+    match (protected, system) {
+        (None, None) => Ok(None),
+        (Some(value), None) | (None, Some(value)) => {
+            credential_id_from_access_key(value)?;
+            Ok(Some(value.to_owned()))
+        }
+        (Some(protected), Some(system)) if protected == system => {
+            credential_id_from_access_key(protected)?;
+            Ok(Some(protected.to_owned()))
+        }
+        (Some(protected), Some(system)) => {
+            let protected_id = credential_id_from_access_key(protected)?;
+            let system_id = credential_id_from_access_key(system)?;
+
+            if system_id > protected_id {
+                Ok(Some(system.to_owned()))
+            } else {
+                Ok(Some(protected.to_owned()))
+            }
+        }
+    }
 }
 
 fn credential_path(account: &str) -> Result<PathBuf> {
@@ -274,5 +334,43 @@ mod tests {
         assert_eq!(mode, FILE_MODE);
 
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn newer_system_access_key_wins_over_stale_protected_copy() {
+        let protected = format!(
+            "{}.{}",
+            "019c1129-ef54-7000-8000-000000000100",
+            "a".repeat(43),
+        );
+        let system = format!(
+            "{}.{}",
+            "019c1129-ef54-7000-8000-000000000200",
+            "b".repeat(43),
+        );
+
+        let selected =
+            select_preferred_access_key(Some(protected.as_str()), Some(system.as_str())).unwrap();
+
+        assert_eq!(selected.as_deref(), Some(system.as_str()));
+    }
+
+    #[test]
+    fn newer_protected_access_key_is_not_replaced_by_stale_keychain_copy() {
+        let protected = format!(
+            "{}.{}",
+            "019c1129-ef54-7000-8000-000000000300",
+            "c".repeat(43),
+        );
+        let system = format!(
+            "{}.{}",
+            "019c1129-ef54-7000-8000-000000000200",
+            "d".repeat(43),
+        );
+
+        let selected =
+            select_preferred_access_key(Some(protected.as_str()), Some(system.as_str())).unwrap();
+
+        assert_eq!(selected.as_deref(), Some(protected.as_str()));
     }
 }
