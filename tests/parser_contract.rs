@@ -206,6 +206,22 @@ fn parses_real_single_line_raid_announcement() {
 }
 
 #[test]
+fn parses_singular_raid_close_announcement_with_escaped_newlines() {
+    let mut parser = LogParser::default();
+    let closing = chat(
+        "[Рейд] » Закрылись врата на рейд \"Темный лес\" (локация #1)\\nЗакрылись врата на рейд \"Луга с обелисками\" (локация #16)\\nЗакрылись врата на рейд \"Подводный храм\" (локация #17)",
+    );
+
+    assert_eq!(
+        parser.consume_line(&closing),
+        vec![CollectorEvent::Raid {
+            locations: vec![1, 16, 17],
+        }],
+    );
+    assert_eq!(parser.mode(), GameMode::MasterSword);
+}
+
+#[test]
 fn blocks_events_in_other_modes_and_accepts_them_after_master_sword_join() {
     let mut parser = LogParser::default();
     let drop = chat("[Магистр] PlayerOne [#20] выбил \"Мифическое\" оружие Лесной меч");
