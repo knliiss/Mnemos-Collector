@@ -23,7 +23,7 @@ impl CredentialStore {
         let access_key = windows::load(&credential_target(ACCESS_KEY_ACCOUNT))?;
 
         #[cfg(target_os = "macos")]
-        let access_key = macos::load(KEYRING_SERVICE, ACCESS_KEY_ACCOUNT)?;
+        let access_key = macos::load_access_key(KEYRING_SERVICE, ACCESS_KEY_ACCOUNT)?;
 
         #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
         let access_key = {
@@ -71,6 +71,31 @@ impl CredentialStore {
                 .context("failed to open the operating-system credential store")?
                 .set_password(access_key)
                 .context("failed to save collector access key")
+        }
+    }
+
+    pub fn delete(self) -> Result<()> {
+        #[cfg(target_os = "windows")]
+        {
+            windows::delete(&credential_target(ACCESS_KEY_ACCOUNT))
+                .context("failed to remove collector access key")
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            macos::delete(KEYRING_SERVICE, ACCESS_KEY_ACCOUNT)
+                .context("failed to remove collector access key")
+        }
+
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        {
+            let entry = Entry::new(KEYRING_SERVICE, ACCESS_KEY_ACCOUNT)
+                .context("failed to open the operating-system credential store")?;
+
+            match entry.delete_credential() {
+                Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
+                Err(error) => Err(error).context("failed to remove collector access key"),
+            }
         }
     }
 }
