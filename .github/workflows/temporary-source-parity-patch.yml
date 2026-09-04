@@ -1,0 +1,72 @@
+name: Temporary Source Parity Patch
+
+on:
+  push:
+    branches:
+      - fix/macos-credential-recovery-ui-parity
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: fix/macos-credential-recovery-ui-parity
+
+      - name: Apply focused source patches
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          application = Path("src/application.rs")
+          text = application.read_text(encoding="utf-8")
+          needle = """        if fresh_log {\n            diagnostics::info(\n"""
+          replacement = """        if fresh_log {\n            diagnostics::mark_log_activity();\n            diagnostics::info(\n"""
+
+          if replacement not in text:
+              if needle not in text:
+                  raise SystemExit("fresh-log activity insertion point not found")
+              text = text.replace(needle, replacement, 1)
+              application.write_text(text, encoding="utf-8")
+
+          portable = Path("src/desktop/portable.rs")
+          text = portable.read_text(encoding="utf-8")
+
+          mascot_start = text.index("fn paint_mascot(ui: &egui::Ui, rect: Rect) {")
+          icon_start = text.index("fn portable_icon() -> egui::IconData {", mascot_start)
+          exact_mascot = """fn paint_mascot(ui: &egui::Ui, rect: Rect) {\n    super::portable_mascot::paint(ui, rect);\n}\n\n"""
+          text = text[:mascot_start] + exact_mascot + text[icon_start:]
+
+          icon_start = text.index("fn portable_icon() -> egui::IconData {")
+          provisioning_start = text.index("async fn provision_current_installation", icon_start)
+          exact_icon = """fn portable_icon() -> egui::IconData {\n    super::portable_mascot::icon()\n}\n\n"""
+          text = text[:icon_start] + exact_icon + text[provisioning_start:]
+          portable.write_text(text, encoding="utf-8")
+          PY
+
+          git diff --check
+
+      - name: Commit source patches when needed
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet; then
+            echo "Source parity patches already applied"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/application.rs src/desktop/portable.rs
+          git commit -m "Align macOS runtime activity and mascot rendering"
+          git push origin HEAD:fix/macos-credential-recovery-ui-parity
