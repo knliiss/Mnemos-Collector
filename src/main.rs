@@ -3,13 +3,16 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use mnemos_collector::credential_validation::{
+    CredentialValidationClient, CredentialValidationStatus,
+};
 use mnemos_collector::cristalix::discover_latest_log;
 use mnemos_collector::desktop::{self, DesktopLaunchContext};
 use mnemos_collector::diagnostics::{self, InstallationMode};
 use mnemos_collector::launch::LaunchArguments;
 use mnemos_collector::platform::{Autostart, Installation};
 use mnemos_collector::provisioning::{ProvisioningClient, default_device_name};
-use mnemos_collector::security::CredentialStore;
+use mnemos_collector::security::{CredentialStore, credential_id_from_access_key};
 use mnemos_collector::update::{
     ApplyUpdateCommand, acknowledge_startup, cleanup_helper_when_possible,
 };
@@ -119,6 +122,7 @@ async fn run() -> Result<()> {
     }
 
     let access_key = CredentialStore.load()?;
+    let access_key = validate_stored_credential(access_key).await;
 
     if !current_installation && access_key.is_some() {
         diagnostics::info(
@@ -147,6 +151,60 @@ async fn run() -> Result<()> {
         },
         tokio::runtime::Handle::current(),
     )
+}
+
+async fn validate_stored_credential(access_key: Option<String>) -> Option<String> {
+    let Some(access_key) = access_key else {
+        return None;
+    };
+
+    let validation_client = match CredentialValidationClient::new() {
+        Ok(client) => client,
+        Err(error) => {
+            diagnostics::warn(
+                "security",
+                format!(
+                    "Collector credential preflight could not start; keeping local credential: {error:#}"
+                ),
+            );
+            return Some(access_key);
+        }
+    };
+
+    match validation_client.validate(&access_key).await {
+        Ok(CredentialValidationStatus::Active) => Some(access_key),
+        Ok(CredentialValidationStatus::Rejected) => {
+            let credential_id = credential_id_from_access_key(&access_key)
+                .map(|id| id.to_string())
+                .unwrap_or_else(|_| "unknown".to_owned());
+
+            diagnostics::warn(
+                "security",
+                format!(
+                    "Stored Collector credential {credential_id} is revoked or inactive; activation is required again"
+                ),
+            );
+
+            if let Err(error) = CredentialStore.delete() {
+                diagnostics::warn(
+                    "security",
+                    format!("Failed to remove rejected Collector credential: {error:#}"),
+                );
+            }
+
+            None
+        }
+        Err(error) => {
+            diagnostics::warn(
+                "security",
+                format!(
+                    "Collector credential preflight is unavailable; keeping local credential: {error:#}"
+                ),
+            );
+
+            Some(access_key)
+        }
+    }
 }
 
 fn prime_cristalix_log_path() {
