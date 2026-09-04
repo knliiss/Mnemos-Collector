@@ -42,19 +42,19 @@ jobs:
 
           open_needle = """        let spool = ReportSpool::open_default()\n            .await\n            .context(\"failed to open reliable report spool\")?;\n"""
           open_replacement = """        let mut spool = ReportSpool::open_default()\n            .await\n            .context(\"failed to open reliable report spool\")?;\n        discard_expired_reports(&mut spool).await?;\n"""
-          if "discard_expired_reports(&mut spool).await?;" not in text:
+          if open_replacement not in text:
               if open_needle not in text:
                   raise SystemExit("spool startup insertion point not found")
               text = text.replace(open_needle, open_replacement, 1)
 
           deliver_needle = """    async fn deliver_pending_reports(&mut self) -> Result<()> {\n        for _ in 0..MAX_REPORTS_PER_TICK {\n"""
           deliver_replacement = """    async fn deliver_pending_reports(&mut self) -> Result<()> {\n        discard_expired_reports(&mut self.spool).await?;\n\n        for _ in 0..MAX_REPORTS_PER_TICK {\n"""
-          if "async fn deliver_pending_reports" in text and "discard_expired_reports(&mut self.spool).await?;" not in text:
+          if deliver_replacement not in text:
               if deliver_needle not in text:
                   raise SystemExit("delivery pruning insertion point not found")
               text = text.replace(deliver_needle, deliver_replacement, 1)
 
-          helper_needle = """fn reconnect_delay_after_failure(current: Duration, maximum: Duration) -> Duration {\n"""
+          helper_needle = """fn connection_is_stable(connected_at: Instant, now: Instant) -> bool {\n"""
           helper = """async fn discard_expired_reports(spool: &mut ReportSpool) -> Result<()> {\n    let cutoff = Utc::now() - chrono::Duration::seconds(MAX_PENDING_REPORT_AGE_SECONDS);\n    let discarded = spool\n        .discard_before(cutoff)\n        .await\n        .context(\"failed to expire stale pending reports\")?;\n\n    if discarded > 0 {\n        diagnostics::warn(\n            \"spool\",\n            format!(\n                \"Discarded {discarded} pending report(s) older than 30 minutes instead of replaying stale events\"\n            ),\n        );\n    }\n\n    Ok(())\n}\n\n"""
           if "async fn discard_expired_reports(spool: &mut ReportSpool)" not in text:
               if helper_needle not in text:
