@@ -62,6 +62,7 @@ const TEXT_MUTED: Color32 = Color32::from_rgb(0x7c, 0x80, 0x72);
 const ACCENT: Color32 = Color32::from_rgb(0xcb, 0xff, 0x2d);
 const POSITIVE: Color32 = Color32::from_rgb(0xbd, 0xe0, 0x6d);
 const WARNING: Color32 = Color32::from_rgb(0xff, 0xb3, 0x4f);
+#[cfg(target_os = "macos")]
 const DANGER_DIM: Color32 = Color32::from_rgb(0x31, 0x16, 0x18);
 const DANGER: Color32 = Color32::from_rgb(0xff, 0x68, 0x73);
 
@@ -1195,6 +1196,7 @@ enum CollectorButtonKind {
     Secondary,
     Toggle { enabled: bool },
     Update { disabled: bool },
+    #[cfg(target_os = "macos")]
     Window { danger: bool },
 }
 
@@ -1270,6 +1272,7 @@ impl egui::Widget for CollectorButton<'_> {
                 paint_pill(ui, rect, fill, border);
                 paint_centered_button_text(ui, rect, self.label, text, true);
             }
+            #[cfg(target_os = "macos")]
             CollectorButtonKind::Window { danger } => {
                 let (fill, border, text) = if danger && hovered {
                     (DANGER, DANGER, BACKGROUND)
