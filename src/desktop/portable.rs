@@ -5,9 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use eframe::egui::{
-    self, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind,
-};
+use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind};
 use tokio::runtime::Handle;
 use zeroize::Zeroizing;
 
@@ -144,8 +142,11 @@ enum ActivationOutcome {
 
 #[derive(Debug, Clone, Copy)]
 struct PortableLayout {
+    #[cfg(target_os = "macos")]
     title_bar: Rect,
+    #[cfg(target_os = "macos")]
     window_minimize: Rect,
+    #[cfg(target_os = "macos")]
     window_close: Rect,
     hero: Rect,
     activation: Option<Rect>,
@@ -166,14 +167,17 @@ struct PortableLayout {
 impl PortableLayout {
     fn new(provisioned: bool, log_source_recovery: bool, update_available: bool) -> Self {
         let content_right = WINDOW_WIDTH - CONTENT_MARGIN;
+        #[cfg(target_os = "macos")]
         let title_bar = Rect::from_min_max(
             egui::pos2(0.0, 0.0),
             egui::pos2(WINDOW_WIDTH, HEADER_HEIGHT),
         );
+        #[cfg(target_os = "macos")]
         let window_close = Rect::from_min_max(
             egui::pos2(WINDOW_WIDTH - 56.0, 13.0),
             egui::pos2(WINDOW_WIDTH - 18.0, 47.0),
         );
+        #[cfg(target_os = "macos")]
         let window_minimize = Rect::from_min_max(
             egui::pos2(window_close.left() - 46.0, 13.0),
             egui::pos2(window_close.left() - 8.0, 47.0),
@@ -235,15 +239,27 @@ impl PortableLayout {
             egui::pos2(content_right, WINDOW_HEIGHT - CONTENT_MARGIN),
         );
         let debug_toggle = Rect::from_min_max(
-            egui::pos2(logs_card.right() - 14.0 - DEBUG_TOGGLE_WIDTH, logs_card.top() + 13.0),
-            egui::pos2(logs_card.right() - 14.0, logs_card.top() + 13.0 + LOG_ACTION_HEIGHT),
+            egui::pos2(
+                logs_card.right() - 14.0 - DEBUG_TOGGLE_WIDTH,
+                logs_card.top() + 13.0,
+            ),
+            egui::pos2(
+                logs_card.right() - 14.0,
+                logs_card.top() + 13.0 + LOG_ACTION_HEIGHT,
+            ),
         );
         let copy_logs = Rect::from_min_max(
-            egui::pos2(debug_toggle.left() - LOG_ACTION_GAP - COPY_LOGS_WIDTH, debug_toggle.top()),
+            egui::pos2(
+                debug_toggle.left() - LOG_ACTION_GAP - COPY_LOGS_WIDTH,
+                debug_toggle.top(),
+            ),
             egui::pos2(debug_toggle.left() - LOG_ACTION_GAP, debug_toggle.bottom()),
         );
         let update_button = Rect::from_min_max(
-            egui::pos2(copy_logs.left() - LOG_ACTION_GAP - UPDATE_BUTTON_WIDTH, copy_logs.top()),
+            egui::pos2(
+                copy_logs.left() - LOG_ACTION_GAP - UPDATE_BUTTON_WIDTH,
+                copy_logs.top(),
+            ),
             egui::pos2(copy_logs.left() - LOG_ACTION_GAP, copy_logs.bottom()),
         );
         let diagnostics_right = if update_available {
@@ -261,8 +277,11 @@ impl PortableLayout {
         );
 
         Self {
+            #[cfg(target_os = "macos")]
             title_bar,
+            #[cfg(target_os = "macos")]
             window_minimize,
+            #[cfg(target_os = "macos")]
             window_close,
             hero,
             activation,
@@ -451,7 +470,7 @@ impl PortableDesktop {
         }
     }
 
-    fn draw_header(&self, ui: &mut egui::Ui, context: &egui::Context, layout: PortableLayout) {
+    fn draw_header(&self, ui: &mut egui::Ui, _context: &egui::Context, _layout: PortableLayout) {
         let icon = Rect::from_min_max(egui::pos2(22.0, 12.0), egui::pos2(66.0, 56.0));
         paint_card(ui, icon, 18, SURFACE, LINE);
         paint_mascot(ui, icon.shrink(2.0));
@@ -476,20 +495,23 @@ impl PortableDesktop {
         #[cfg(target_os = "macos")]
         {
             let drag_rect = Rect::from_min_max(
-                layout.title_bar.min,
-                egui::pos2(layout.window_minimize.left() - 8.0, layout.title_bar.bottom()),
+                _layout.title_bar.min,
+                egui::pos2(
+                    _layout.window_minimize.left() - 8.0,
+                    _layout.title_bar.bottom(),
+                ),
             );
             let drag = ui.interact(drag_rect, ui.id().with("mnemos-window-drag"), Sense::drag());
 
             if drag.drag_started() {
-                context.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                _context.send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
 
-            if window_button(ui, layout.window_minimize, "—", false).clicked() {
-                context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            if window_button(ui, _layout.window_minimize, "—", false).clicked() {
+                _context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             }
 
-            if window_button(ui, layout.window_close, "×", true).clicked() {
+            if window_button(ui, _layout.window_close, "×", true).clicked() {
                 macos_native::hide_application();
             }
         }
@@ -549,10 +571,7 @@ impl PortableDesktop {
         let bottom = hero.bottom() - STATUS_TILE_BOTTOM_MARGIN;
         let top = bottom - STATUS_TILE_HEIGHT;
 
-        let game = Rect::from_min_max(
-            egui::pos2(left, top),
-            egui::pos2(left + tile_width, bottom),
-        );
+        let game = Rect::from_min_max(egui::pos2(left, top), egui::pos2(left + tile_width, bottom));
         let mode = Rect::from_min_max(
             egui::pos2(game.right() + gap, top),
             egui::pos2(game.right() + gap + tile_width, bottom),
@@ -715,20 +734,23 @@ impl PortableDesktop {
             TEXT_SECONDARY,
         );
 
-        let mut right = rect.right() - 14.0;
-
+        let right = rect.right() - 14.0;
         #[cfg(target_os = "macos")]
-        {
+        let right = {
             let choose = Rect::from_min_max(
                 egui::pos2(right - 124.0, rect.top() + 17.0),
                 egui::pos2(right, rect.top() + 47.0),
             );
-            right = choose.left() - 10.0;
 
-            if ui.put(choose, secondary_button_widget("Выбрать файл…")).clicked() {
+            if ui
+                .put(choose, secondary_button_widget("Выбрать файл…"))
+                .clicked()
+            {
                 self.select_macos_log_file();
             }
-        }
+
+            choose.left() - 10.0
+        };
 
         if configured_path.is_some() {
             let auto = Rect::from_min_max(
@@ -798,7 +820,10 @@ impl PortableDesktop {
         paint_card(ui, layout.logs_card, CARD_RADIUS, SURFACE, LINE);
         paint_text(
             ui,
-            egui::pos2(layout.logs_card.left() + 16.0, layout.logs_card.top() + 15.0),
+            egui::pos2(
+                layout.logs_card.left() + 16.0,
+                layout.logs_card.top() + 15.0,
+            ),
             Align2::LEFT_TOP,
             "Журнал",
             19.0,
@@ -896,9 +921,7 @@ impl PortableDesktop {
                                 .color(log_line_color(line));
                             let response = ui.add_sized(
                                 [ui.available_width(), 18.0],
-                                egui::Button::new(text)
-                                    .selected(selected)
-                                    .frame(selected),
+                                egui::Button::new(text).selected(selected).frame(selected),
                             );
 
                             if response.clicked() {
@@ -993,13 +1016,7 @@ fn configure_style(context: &egui::Context) {
     });
 }
 
-fn paint_card(
-    ui: &egui::Ui,
-    rect: Rect,
-    radius: u8,
-    fill: Color32,
-    stroke_color: Color32,
-) {
+fn paint_card(ui: &egui::Ui, rect: Rect, radius: u8, fill: Color32, stroke_color: Color32) {
     ui.painter().rect(
         rect,
         radius,
@@ -1017,22 +1034,11 @@ fn paint_text(
     size: f32,
     color: Color32,
 ) {
-    ui.painter().text(
-        position,
-        anchor,
-        value,
-        FontId::proportional(size),
-        color,
-    );
+    ui.painter()
+        .text(position, anchor, value, FontId::proportional(size), color);
 }
 
-fn paint_text_clipped(
-    ui: &egui::Ui,
-    rect: Rect,
-    value: &str,
-    size: f32,
-    color: Color32,
-) {
+fn paint_text_clipped(ui: &egui::Ui, rect: Rect, value: &str, size: f32, color: Color32) {
     let painter = ui.painter().with_clip_rect(rect);
     painter.text(
         egui::pos2(rect.left(), rect.center().y),
@@ -1100,13 +1106,7 @@ fn window_button(ui: &mut egui::Ui, rect: Rect, label: &str, danger: bool) -> eg
     )
 }
 
-fn draw_status_tile(
-    ui: &egui::Ui,
-    rect: Rect,
-    label: &str,
-    value: &str,
-    status_color: Color32,
-) {
+fn draw_status_tile(ui: &egui::Ui, rect: Rect, label: &str, value: &str, status_color: Color32) {
     paint_card(ui, rect, 18, SURFACE_RAISED, LINE);
     ui.painter().circle_filled(
         egui::pos2(rect.left() + 11.0, rect.top() + 10.0),
@@ -1426,8 +1426,14 @@ mod tests {
         assert_eq!(layout.debug_toggle.width(), DEBUG_TOGGLE_WIDTH);
         assert_eq!(layout.copy_logs.width(), COPY_LOGS_WIDTH);
         assert_eq!(layout.update_button.width(), UPDATE_BUTTON_WIDTH);
-        assert_eq!(layout.debug_toggle.left() - layout.copy_logs.right(), LOG_ACTION_GAP);
-        assert_eq!(layout.copy_logs.left() - layout.update_button.right(), LOG_ACTION_GAP);
+        assert_eq!(
+            layout.debug_toggle.left() - layout.copy_logs.right(),
+            LOG_ACTION_GAP
+        );
+        assert_eq!(
+            layout.copy_logs.left() - layout.update_button.right(),
+            LOG_ACTION_GAP
+        );
     }
 
     #[test]
