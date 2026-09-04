@@ -15,6 +15,8 @@ mod native_shell;
 mod portable;
 #[cfg(not(target_os = "windows"))]
 mod portable_instance;
+#[cfg(not(target_os = "windows"))]
+mod portable_mascot;
 #[cfg(target_os = "windows")]
 mod single_instance;
 #[cfg(target_os = "windows")]
