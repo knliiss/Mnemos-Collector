@@ -5,9 +5,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Stroke, StrokeKind};
 #[cfg(target_os = "macos")]
 use eframe::egui::Sense;
+use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Stroke, StrokeKind};
 use tokio::runtime::Handle;
 use zeroize::Zeroizing;
 
