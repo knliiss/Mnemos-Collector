@@ -154,9 +154,7 @@ async fn run() -> Result<()> {
 }
 
 async fn validate_stored_credential(access_key: Option<String>) -> Option<String> {
-    let Some(access_key) = access_key else {
-        return None;
-    };
+    let access_key = access_key?;
 
     let validation_client = match CredentialValidationClient::new() {
         Ok(client) => client,
