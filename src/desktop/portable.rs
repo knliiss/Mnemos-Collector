@@ -910,8 +910,14 @@ impl PortableDesktop {
         }
 
         let log_content = Rect::from_min_max(
-            egui::pos2(layout.logs_view.left() + 12.0, layout.logs_view.top() + 10.0),
-            egui::pos2(layout.logs_view.right() - 22.0, layout.logs_view.bottom() - 10.0),
+            egui::pos2(
+                layout.logs_view.left() + 12.0,
+                layout.logs_view.top() + 10.0,
+            ),
+            egui::pos2(
+                layout.logs_view.right() - 22.0,
+                layout.logs_view.bottom() - 10.0,
+            ),
         );
         let scroll_output = ui
             .scope_builder(
@@ -924,9 +930,7 @@ impl PortableDesktop {
 
                     egui::ScrollArea::vertical()
                         .id_salt("mnemos-journal-scroll")
-                        .scroll_bar_visibility(
-                            egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
-                        )
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                         .auto_shrink([false, false])
                         .stick_to_bottom(true)
                         .show(ui, |ui| {
@@ -1089,10 +1093,9 @@ fn prepend_system_font(
         return;
     };
 
-    definitions.font_data.insert(
-        name.to_owned(),
-        egui::FontData::from_owned(bytes).into(),
-    );
+    definitions
+        .font_data
+        .insert(name.to_owned(), egui::FontData::from_owned(bytes).into());
     definitions
         .families
         .entry(family)
@@ -1140,7 +1143,8 @@ fn paint_text(
     let font = FontId::proportional(font_size);
     let weight = windows_weight_offset(requested_size);
 
-    ui.painter().text(position, anchor, value, font.clone(), color);
+    ui.painter()
+        .text(position, anchor, value, font.clone(), color);
     ui.painter().text(
         position + egui::vec2(weight, 0.0),
         anchor,
@@ -1150,13 +1154,7 @@ fn paint_text(
     );
 }
 
-fn paint_text_clipped(
-    ui: &egui::Ui,
-    rect: Rect,
-    value: &str,
-    requested_size: f32,
-    color: Color32,
-) {
+fn paint_text_clipped(ui: &egui::Ui, rect: Rect, value: &str, requested_size: f32, color: Color32) {
     let painter = ui.painter().with_clip_rect(rect);
     let position = egui::pos2(rect.left(), rect.center().y);
     let font = FontId::proportional(windows_font_size(requested_size));
@@ -1241,7 +1239,11 @@ impl egui::Widget for CollectorButton<'_> {
                 } else {
                     LINE
                 };
-                let text = if enabled || hovered { TEXT } else { TEXT_SECONDARY };
+                let text = if enabled || hovered {
+                    TEXT
+                } else {
+                    TEXT_SECONDARY
+                };
                 let dot = if enabled { ACCENT } else { TEXT_MUTED };
 
                 paint_pill(ui, rect, fill, border);
@@ -1380,7 +1382,10 @@ fn draw_status_tile(ui: &egui::Ui, rect: Rect, label: &str, value: &str, status_
     );
     let value_rect = Rect::from_min_max(
         egui::pos2(rect.left() + 12.0, label_bottom),
-        egui::pos2(rect.right() - 10.0, rect.bottom() - STATUS_VALUE_BOTTOM_PADDING),
+        egui::pos2(
+            rect.right() - 10.0,
+            rect.bottom() - STATUS_VALUE_BOTTOM_PADDING,
+        ),
     );
 
     paint_left_centered_text(ui, label_rect, label, TEXT_MUTED);
@@ -1438,8 +1443,7 @@ fn paint_log_scrollbar(
         egui::pos2(logs_view.right() - 6.0, logs_view.bottom() - 10.0),
     );
     let track_height = track.height().max(1.0);
-    let thumb_height = (track_height * visible_height / content_height)
-        .clamp(24.0, track_height);
+    let thumb_height = (track_height * visible_height / content_height).clamp(24.0, track_height);
     let max_offset = (content_height - visible_height).max(1.0);
     let travel = (track_height - thumb_height).max(0.0);
     let fraction = (scroll_offset / max_offset).clamp(0.0, 1.0);
