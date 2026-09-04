@@ -1192,12 +1192,20 @@ fn windows_weight_offset(requested_size: f32) -> f32 {
 
 #[derive(Clone, Copy)]
 enum CollectorButtonKind {
-    Primary { disabled: bool },
+    Primary {
+        disabled: bool,
+    },
     Secondary,
-    Toggle { enabled: bool },
-    Update { disabled: bool },
+    Toggle {
+        enabled: bool,
+    },
+    Update {
+        disabled: bool,
+    },
     #[cfg(target_os = "macos")]
-    Window { danger: bool },
+    Window {
+        danger: bool,
+    },
 }
 
 struct CollectorButton<'a> {
