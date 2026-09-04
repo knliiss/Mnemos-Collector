@@ -1,4 +1,5 @@
 pub mod application;
+pub mod credential_validation;
 pub mod cristalix;
 pub mod desktop;
 pub mod diagnostics;
