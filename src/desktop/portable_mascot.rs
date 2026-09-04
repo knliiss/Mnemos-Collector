@@ -40,7 +40,7 @@ pub(super) fn icon() -> egui::IconData {
     let mut rgba = vec![0_u8; SIZE * SIZE * 4];
     let background = [0x05, 0x06, 0x05, 0xff];
 
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&background);
     }
 
