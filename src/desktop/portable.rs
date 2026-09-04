@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Sense, Stroke, StrokeKind};
+use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Stroke, StrokeKind};
+#[cfg(target_os = "macos")]
+use eframe::egui::Sense;
 use tokio::runtime::Handle;
 use zeroize::Zeroizing;
 
@@ -996,13 +998,13 @@ fn configure_style(context: &egui::Context) {
     visuals.extreme_bg_color = LOG_SURFACE;
     visuals.faint_bg_color = SURFACE;
     visuals.widgets.noninteractive.bg_fill = SURFACE;
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, LINE);
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, LINE);
     visuals.widgets.inactive.bg_fill = SURFACE;
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, LINE);
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, LINE);
     visuals.widgets.hovered.bg_fill = SURFACE_RAISED;
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, LINE_STRONG);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, LINE_STRONG);
     visuals.widgets.active.bg_fill = ACCENT_DIM;
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT);
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, ACCENT);
     visuals.selection.bg_fill = ACCENT_DIM;
     visuals.selection.stroke.color = ACCENT;
     visuals.override_text_color = Some(TEXT);
@@ -1021,7 +1023,7 @@ fn paint_card(ui: &egui::Ui, rect: Rect, radius: u8, fill: Color32, stroke_color
         rect,
         radius,
         fill,
-        Stroke::new(1.0, stroke_color),
+        Stroke::new(1.0_f32, stroke_color),
         StrokeKind::Inside,
     );
 }
@@ -1056,14 +1058,14 @@ fn primary_button_widget(label: &str, disabled: bool) -> egui::Button<'_> {
 
     egui::Button::new(RichText::new(label).size(13.0).color(text).strong())
         .fill(fill)
-        .stroke(Stroke::new(1.0, border))
+        .stroke(Stroke::new(1.0_f32, border))
         .corner_radius(17)
 }
 
 fn secondary_button_widget(label: &str) -> egui::Button<'_> {
     egui::Button::new(RichText::new(label).size(12.0).color(TEXT_SECONDARY))
         .fill(SURFACE)
-        .stroke(Stroke::new(1.0, LINE))
+        .stroke(Stroke::new(1.0_f32, LINE))
         .corner_radius(15)
 }
 
@@ -1078,7 +1080,7 @@ fn toggle_button_widget(label: &str, enabled: bool) -> egui::Button<'_> {
             .color(TEXT_SECONDARY),
     )
     .fill(fill)
-    .stroke(Stroke::new(1.0, border))
+    .stroke(Stroke::new(1.0_f32, border))
     .corner_radius(15)
 }
 
@@ -1089,7 +1091,7 @@ fn update_button_widget(label: &str, disabled: bool) -> egui::Button<'_> {
 
     egui::Button::new(RichText::new(label).size(12.0).color(text).strong())
         .fill(fill)
-        .stroke(Stroke::new(1.0, border))
+        .stroke(Stroke::new(1.0_f32, border))
         .corner_radius(15)
 }
 
@@ -1283,7 +1285,7 @@ fn paint_mascot(ui: &egui::Ui, rect: Rect) {
     let ear_width = size * 0.19;
     let ear_top = rect.top() + size * 0.08;
     let ear_base = center.y - head_radius * 0.58;
-    let transparent_stroke = Stroke::new(0.0, Color32::TRANSPARENT);
+    let transparent_stroke = Stroke::new(0.0_f32, Color32::TRANSPARENT);
     let painter = ui.painter();
 
     painter.add(egui::Shape::convex_polygon(
