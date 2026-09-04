@@ -5,9 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-#[cfg(target_os = "macos")]
-use eframe::egui::Sense;
-use eframe::egui::{self, Align2, Color32, FontId, Rect, RichText, Stroke, StrokeKind};
+use eframe::egui::{self, Align2, Color32, FontId, Rect, Sense, Stroke, StrokeKind};
 use tokio::runtime::Handle;
 use zeroize::Zeroizing;
 
@@ -40,7 +38,16 @@ const UPDATE_BUTTON_WIDTH: f32 = 184.0;
 const LOG_ACTION_GAP: f32 = 10.0;
 const STATUS_TILE_HEIGHT: f32 = 46.0;
 const STATUS_TILE_BOTTOM_MARGIN: f32 = 12.0;
+const STATUS_LABEL_TOP_PADDING: f32 = 3.0;
+const STATUS_LABEL_HEIGHT: f32 = 20.0;
+const STATUS_VALUE_BOTTOM_PADDING: f32 = 2.0;
 const LOG_SOURCE_HEIGHT: f32 = 64.0;
+const LOG_LINE_HEIGHT: f32 = 18.0;
+
+const UI_FONT_SIZE: f32 = 16.0;
+const TITLE_FONT_SIZE: f32 = 29.0;
+const SECTION_FONT_SIZE: f32 = 21.0;
+const MONO_FONT_SIZE: f32 = 14.0;
 
 const BACKGROUND: Color32 = Color32::from_rgb(0x02, 0x03, 0x02);
 const LOG_SURFACE: Color32 = Color32::from_rgb(0x0b, 0x0c, 0x09);
@@ -55,6 +62,7 @@ const TEXT_MUTED: Color32 = Color32::from_rgb(0x7c, 0x80, 0x72);
 const ACCENT: Color32 = Color32::from_rgb(0xcb, 0xff, 0x2d);
 const POSITIVE: Color32 = Color32::from_rgb(0xbd, 0xe0, 0x6d);
 const WARNING: Color32 = Color32::from_rgb(0xff, 0xb3, 0x4f);
+const DANGER_DIM: Color32 = Color32::from_rgb(0x31, 0x16, 0x18);
 const DANGER: Color32 = Color32::from_rgb(0xff, 0x68, 0x73);
 
 pub fn run(context: DesktopLaunchContext, runtime: Handle) -> Result<()> {
@@ -487,7 +495,7 @@ impl PortableDesktop {
         );
         paint_text(
             ui,
-            egui::pos2(78.0, 35.0),
+            egui::pos2(78.0, 34.0),
             Align2::LEFT_TOP,
             "Collector",
             22.0,
@@ -529,7 +537,7 @@ impl PortableDesktop {
             egui::pos2(rect.left() + 1.0, rect.top() + 24.0),
             egui::pos2(rect.left() + 4.0, rect.top() + 82.0),
         );
-        ui.painter().rect_filled(accent_rect, 2, status_color);
+        paint_pill(ui, accent_rect, status_color, status_color);
 
         paint_text(
             ui,
@@ -549,7 +557,7 @@ impl PortableDesktop {
         );
         paint_text(
             ui,
-            egui::pos2(rect.left() + 20.0, rect.top() + 71.0),
+            egui::pos2(rect.left() + 20.0, rect.top() + 70.0),
             Align2::LEFT_TOP,
             detail,
             13.0,
@@ -646,7 +654,7 @@ impl PortableDesktop {
         );
         paint_text(
             ui,
-            egui::pos2(activation.left() + 18.0, activation.top() + 47.0),
+            egui::pos2(activation.left() + 18.0, activation.top() + 46.0),
             Align2::LEFT_TOP,
             "Код активации",
             11.0,
@@ -654,23 +662,28 @@ impl PortableDesktop {
         );
         paint_text(
             ui,
-            egui::pos2(layout.device_field.left(), activation.top() + 47.0),
+            egui::pos2(layout.device_field.left(), activation.top() + 46.0),
             Align2::LEFT_TOP,
             "Устройство",
             11.0,
             TEXT_MUTED,
         );
 
-        paint_card(ui, layout.token_field, 17, SURFACE_RAISED, LINE_STRONG);
-        paint_card(ui, layout.device_field, 17, SURFACE_RAISED, LINE_STRONG);
+        paint_pill(ui, layout.token_field, SURFACE_RAISED, LINE_STRONG);
+        paint_pill(ui, layout.device_field, SURFACE_RAISED, LINE_STRONG);
 
         let token_edit = egui::TextEdit::singleline(&mut self.activation_token)
             .password(true)
             .frame(false)
+            .font(FontId::proportional(UI_FONT_SIZE))
+            .text_color(TEXT)
             .hint_text("Одноразовый код");
         ui.put(layout.token_edit, token_edit);
 
-        let device_edit = egui::TextEdit::singleline(&mut self.device_name).frame(false);
+        let device_edit = egui::TextEdit::singleline(&mut self.device_name)
+            .frame(false)
+            .font(FontId::proportional(UI_FONT_SIZE))
+            .text_color(TEXT);
         ui.put(layout.device_edit, device_edit);
 
         let label = if self.provisioning {
@@ -721,18 +734,18 @@ impl PortableDesktop {
         paint_card(ui, rect, 18, SURFACE, LINE);
         paint_text(
             ui,
-            egui::pos2(rect.left() + 16.0, rect.top() + 12.0),
+            egui::pos2(rect.left() + 16.0, rect.top() + 10.0),
             Align2::LEFT_TOP,
             "ЛОГ CRISTALIX",
-            10.0,
+            11.0,
             ACCENT,
         );
         paint_text(
             ui,
-            egui::pos2(rect.left() + 16.0, rect.top() + 33.0),
+            egui::pos2(rect.left() + 16.0, rect.top() + 31.0),
             Align2::LEFT_TOP,
             &source_text,
-            12.0,
+            13.0,
             TEXT_SECONDARY,
         );
 
@@ -780,7 +793,7 @@ impl PortableDesktop {
         if let Some(error) = self.log_source_error.as_deref() {
             paint_text(
                 ui,
-                egui::pos2(rect.left() + 420.0, rect.top() + 33.0),
+                egui::pos2(rect.left() + 420.0, rect.top() + 31.0),
                 Align2::LEFT_TOP,
                 error,
                 11.0,
@@ -824,7 +837,7 @@ impl PortableDesktop {
             ui,
             egui::pos2(
                 layout.logs_card.left() + 16.0,
-                layout.logs_card.top() + 15.0,
+                layout.logs_card.top() + 13.0,
             ),
             Align2::LEFT_TOP,
             "Журнал",
@@ -840,6 +853,11 @@ impl PortableDesktop {
             11.0,
             if runtime.required_update_version.is_some() {
                 DANGER
+            } else if runtime.spool_capacity > 0
+                && runtime.spool_pending.saturating_mul(10)
+                    >= runtime.spool_capacity.saturating_mul(9)
+            {
+                WARNING
             } else {
                 TEXT_MUTED
             },
@@ -891,47 +909,58 @@ impl PortableDesktop {
             self.selected_log_entry = None;
         }
 
-        let log_content = layout.logs_view.shrink2(egui::vec2(10.0, 8.0));
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(log_content)
-                .layout(egui::Layout::top_down(egui::Align::Min)),
-            |ui| {
-                ui.set_clip_rect(log_content);
-                ui.spacing_mut().item_spacing.y = 0.0;
+        let log_content = Rect::from_min_max(
+            egui::pos2(layout.logs_view.left() + 12.0, layout.logs_view.top() + 10.0),
+            egui::pos2(layout.logs_view.right() - 22.0, layout.logs_view.bottom() - 10.0),
+        );
+        let scroll_output = ui
+            .scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(log_content)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+                |ui| {
+                    ui.set_clip_rect(log_content);
+                    ui.spacing_mut().item_spacing.y = 0.0;
 
-                egui::ScrollArea::vertical()
-                    .id_salt("mnemos-journal-scroll")
-                    .auto_shrink([false, false])
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        ui.set_min_width(log_content.width());
+                    egui::ScrollArea::vertical()
+                        .id_salt("mnemos-journal-scroll")
+                        .scroll_bar_visibility(
+                            egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                        )
+                        .auto_shrink([false, false])
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            ui.set_min_width(log_content.width());
 
-                        if log_text.is_empty() {
-                            ui.label(
-                                RichText::new("Журнал пока пуст.")
-                                    .size(12.0)
-                                    .color(TEXT_MUTED),
-                            );
-                        }
-
-                        for line in log_text.lines() {
-                            let selected = self.selected_log_entry.as_deref() == Some(line);
-                            let text = RichText::new(line)
-                                .monospace()
-                                .size(11.5)
-                                .color(log_line_color(line));
-                            let response = ui.add_sized(
-                                [ui.available_width(), 18.0],
-                                egui::Button::new(text).selected(selected).frame(selected),
-                            );
-
-                            if response.clicked() {
-                                self.selected_log_entry = Some(line.to_owned());
+                            if log_text.is_empty() {
+                                ui.add_sized(
+                                    [ui.available_width(), LOG_LINE_HEIGHT],
+                                    journal_line_widget("Журнал пока пуст.", TEXT_MUTED, false),
+                                );
                             }
-                        }
-                    });
-            },
+
+                            for line in log_text.lines() {
+                                let selected = self.selected_log_entry.as_deref() == Some(line);
+                                let response = ui.add_sized(
+                                    [ui.available_width(), LOG_LINE_HEIGHT],
+                                    journal_line_widget(line, log_line_color(line), selected),
+                                );
+
+                                if response.clicked() {
+                                    self.selected_log_entry = Some(line.to_owned());
+                                }
+                            }
+                        })
+                },
+            )
+            .inner;
+
+        paint_log_scrollbar(
+            ui,
+            layout.logs_view,
+            scroll_output.content_size.y,
+            scroll_output.inner_rect.height(),
+            scroll_output.state.offset.y,
         );
 
         let copy_pressed =
@@ -991,6 +1020,8 @@ impl eframe::App for PortableDesktop {
 }
 
 fn configure_style(context: &egui::Context) {
+    configure_platform_fonts(context);
+
     let mut visuals = egui::Visuals::dark();
 
     visuals.panel_fill = BACKGROUND;
@@ -1008,7 +1039,7 @@ fn configure_style(context: &egui::Context) {
     visuals.selection.bg_fill = ACCENT_DIM;
     visuals.selection.stroke.color = ACCENT;
     visuals.override_text_color = Some(TEXT);
-    visuals.window_corner_radius = 18.into();
+    visuals.window_corner_radius = 9.into();
 
     context.set_visuals(visuals);
     context.style_mut(|style| {
@@ -1018,7 +1049,76 @@ fn configure_style(context: &egui::Context) {
     });
 }
 
-fn paint_card(ui: &egui::Ui, rect: Rect, radius: u8, fill: Color32, stroke_color: Color32) {
+#[cfg(target_os = "macos")]
+fn configure_platform_fonts(context: &egui::Context) {
+    let mut definitions = egui::FontDefinitions::default();
+
+    prepend_system_font(
+        &mut definitions,
+        "mnemos-sf-ui",
+        egui::FontFamily::Proportional,
+        &[
+            "/System/Library/Fonts/SFNS.ttf",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+        ],
+    );
+    prepend_system_font(
+        &mut definitions,
+        "mnemos-sf-mono",
+        egui::FontFamily::Monospace,
+        &[
+            "/System/Library/Fonts/SFNSMono.ttf",
+            "/System/Library/Fonts/Menlo.ttc",
+        ],
+    );
+
+    context.set_fonts(definitions);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn configure_platform_fonts(_context: &egui::Context) {}
+
+#[cfg(target_os = "macos")]
+fn prepend_system_font(
+    definitions: &mut egui::FontDefinitions,
+    name: &str,
+    family: egui::FontFamily,
+    candidates: &[&str],
+) {
+    let Some(bytes) = candidates.iter().find_map(|path| std::fs::read(path).ok()) else {
+        return;
+    };
+
+    definitions.font_data.insert(
+        name.to_owned(),
+        egui::FontData::from_owned(bytes).into(),
+    );
+    definitions
+        .families
+        .entry(family)
+        .or_default()
+        .insert(0, name.to_owned());
+}
+
+fn paint_card(ui: &egui::Ui, rect: Rect, diameter: u8, fill: Color32, stroke_color: Color32) {
+    ui.painter().rect(
+        rect,
+        gdi_corner_radius(diameter),
+        fill,
+        Stroke::new(1.0_f32, stroke_color),
+        StrokeKind::Inside,
+    );
+}
+
+fn gdi_corner_radius(diameter: u8) -> u8 {
+    diameter / 2
+}
+
+fn paint_pill(ui: &egui::Ui, rect: Rect, fill: Color32, stroke_color: Color32) {
+    let radius = (rect.width().min(rect.height()) / 2.0)
+        .round()
+        .clamp(0.0, u8::MAX as f32) as u8;
+
     ui.painter().rect(
         rect,
         radius,
@@ -1033,104 +1133,324 @@ fn paint_text(
     position: egui::Pos2,
     anchor: Align2,
     value: &str,
-    size: f32,
+    requested_size: f32,
     color: Color32,
 ) {
-    ui.painter()
-        .text(position, anchor, value, FontId::proportional(size), color);
-}
+    let font_size = windows_font_size(requested_size);
+    let font = FontId::proportional(font_size);
+    let weight = windows_weight_offset(requested_size);
 
-fn paint_text_clipped(ui: &egui::Ui, rect: Rect, value: &str, size: f32, color: Color32) {
-    let painter = ui.painter().with_clip_rect(rect);
-    painter.text(
-        egui::pos2(rect.left(), rect.center().y),
-        Align2::LEFT_CENTER,
+    ui.painter().text(position, anchor, value, font.clone(), color);
+    ui.painter().text(
+        position + egui::vec2(weight, 0.0),
+        anchor,
         value,
-        FontId::proportional(size),
+        font,
         color,
     );
 }
 
-fn primary_button_widget(label: &str, disabled: bool) -> egui::Button<'_> {
-    let fill = if disabled { ACCENT_DIM } else { ACCENT };
-    let text = if disabled { TEXT_SECONDARY } else { BACKGROUND };
-    let border = if disabled { ACCENT_DIM } else { ACCENT };
+fn paint_text_clipped(
+    ui: &egui::Ui,
+    rect: Rect,
+    value: &str,
+    requested_size: f32,
+    color: Color32,
+) {
+    let painter = ui.painter().with_clip_rect(rect);
+    let position = egui::pos2(rect.left(), rect.center().y);
+    let font = FontId::proportional(windows_font_size(requested_size));
 
-    egui::Button::new(RichText::new(label).size(13.0).color(text).strong())
-        .fill(fill)
-        .stroke(Stroke::new(1.0_f32, border))
-        .corner_radius(17)
+    painter.text(position, Align2::LEFT_CENTER, value, font.clone(), color);
+    painter.text(
+        position + egui::vec2(0.35, 0.0),
+        Align2::LEFT_CENTER,
+        value,
+        font,
+        color,
+    );
 }
 
-fn secondary_button_widget(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).size(12.0).color(TEXT_SECONDARY))
-        .fill(SURFACE)
-        .stroke(Stroke::new(1.0_f32, LINE))
-        .corner_radius(15)
+fn windows_font_size(requested_size: f32) -> f32 {
+    if requested_size >= 26.0 {
+        TITLE_FONT_SIZE
+    } else if requested_size >= 18.0 {
+        SECTION_FONT_SIZE
+    } else {
+        UI_FONT_SIZE
+    }
 }
 
-fn toggle_button_widget(label: &str, enabled: bool) -> egui::Button<'_> {
-    let fill = if enabled { ACCENT_DIM } else { SURFACE_RAISED };
-    let border = if enabled { ACCENT } else { LINE };
-    let dot = if enabled { "●" } else { "○" };
-
-    egui::Button::new(
-        RichText::new(format!("{dot}  {label}"))
-            .size(12.0)
-            .color(TEXT_SECONDARY),
-    )
-    .fill(fill)
-    .stroke(Stroke::new(1.0_f32, border))
-    .corner_radius(15)
+fn windows_weight_offset(requested_size: f32) -> f32 {
+    if requested_size >= 18.0 {
+        0.75
+    } else if requested_size <= 11.0 {
+        0.55
+    } else {
+        0.35
+    }
 }
 
-fn update_button_widget(label: &str, disabled: bool) -> egui::Button<'_> {
-    let fill = if disabled { SURFACE_RAISED } else { ACCENT_DIM };
-    let border = if disabled { LINE_STRONG } else { ACCENT };
-    let text = if disabled { TEXT_MUTED } else { ACCENT };
+#[derive(Clone, Copy)]
+enum CollectorButtonKind {
+    Primary { disabled: bool },
+    Secondary,
+    Toggle { enabled: bool },
+    Update { disabled: bool },
+    Window { danger: bool },
+}
 
-    egui::Button::new(RichText::new(label).size(12.0).color(text).strong())
-        .fill(fill)
-        .stroke(Stroke::new(1.0_f32, border))
-        .corner_radius(15)
+struct CollectorButton<'a> {
+    label: &'a str,
+    kind: CollectorButtonKind,
+}
+
+impl egui::Widget for CollectorButton<'_> {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        let desired_size = ui.available_size_before_wrap();
+        let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
+        let hovered = response.hovered();
+
+        match self.kind {
+            CollectorButtonKind::Primary { disabled } => {
+                let fill = if disabled { ACCENT_DIM } else { ACCENT };
+                let border = if hovered && !disabled {
+                    TEXT_SECONDARY
+                } else {
+                    ACCENT
+                };
+                let text = if disabled { TEXT_SECONDARY } else { BACKGROUND };
+
+                paint_pill(ui, rect, fill, border);
+                paint_centered_button_text(ui, rect, self.label, text, true);
+            }
+            CollectorButtonKind::Secondary => {
+                let fill = if hovered { SURFACE_RAISED } else { SURFACE };
+                let border = if hovered { LINE_STRONG } else { LINE };
+                let text = if hovered { TEXT } else { TEXT_SECONDARY };
+
+                paint_pill(ui, rect, fill, border);
+                paint_centered_button_text(ui, rect, self.label, text, false);
+            }
+            CollectorButtonKind::Toggle { enabled } => {
+                let fill = if enabled { ACCENT_DIM } else { SURFACE_RAISED };
+                let border = if enabled {
+                    ACCENT
+                } else if hovered {
+                    LINE_STRONG
+                } else {
+                    LINE
+                };
+                let text = if enabled || hovered { TEXT } else { TEXT_SECONDARY };
+                let dot = if enabled { ACCENT } else { TEXT_MUTED };
+
+                paint_pill(ui, rect, fill, border);
+                ui.painter().circle_filled(
+                    egui::pos2(rect.left() + 13.5, rect.top() + 13.5),
+                    3.5,
+                    dot,
+                );
+                paint_left_centered_text(
+                    ui,
+                    Rect::from_min_max(
+                        egui::pos2(rect.left() + 25.0, rect.top()),
+                        egui::pos2(rect.right() - 8.0, rect.bottom()),
+                    ),
+                    self.label,
+                    text,
+                );
+            }
+            CollectorButtonKind::Update { disabled } => {
+                let fill = if disabled { SURFACE_RAISED } else { ACCENT_DIM };
+                let border = if disabled { LINE_STRONG } else { ACCENT };
+                let text = if disabled { TEXT_MUTED } else { ACCENT };
+
+                paint_pill(ui, rect, fill, border);
+                paint_centered_button_text(ui, rect, self.label, text, true);
+            }
+            CollectorButtonKind::Window { danger } => {
+                let (fill, border, text) = if danger && hovered {
+                    (DANGER, DANGER, BACKGROUND)
+                } else if danger {
+                    (DANGER_DIM, DANGER, DANGER)
+                } else if hovered {
+                    (SURFACE_RAISED, LINE_STRONG, TEXT)
+                } else {
+                    (SURFACE, LINE, TEXT_SECONDARY)
+                };
+
+                paint_pill(ui, rect, fill, border);
+                paint_centered_button_text(ui, rect, self.label, text, false);
+            }
+        }
+
+        response
+    }
+}
+
+fn primary_button_widget(label: &str, disabled: bool) -> CollectorButton<'_> {
+    CollectorButton {
+        label,
+        kind: CollectorButtonKind::Primary { disabled },
+    }
+}
+
+fn secondary_button_widget(label: &str) -> CollectorButton<'_> {
+    CollectorButton {
+        label,
+        kind: CollectorButtonKind::Secondary,
+    }
+}
+
+fn toggle_button_widget(label: &str, enabled: bool) -> CollectorButton<'_> {
+    CollectorButton {
+        label,
+        kind: CollectorButtonKind::Toggle { enabled },
+    }
+}
+
+fn update_button_widget(label: &str, disabled: bool) -> CollectorButton<'_> {
+    CollectorButton {
+        label,
+        kind: CollectorButtonKind::Update { disabled },
+    }
 }
 
 #[cfg(target_os = "macos")]
 fn window_button(ui: &mut egui::Ui, rect: Rect, label: &str, danger: bool) -> egui::Response {
-    let text = if danger { DANGER } else { TEXT_SECONDARY };
-
     ui.put(
         rect,
-        egui::Button::new(RichText::new(label).size(18.0).color(text))
-            .fill(BACKGROUND)
-            .stroke(Stroke::NONE)
-            .corner_radius(12),
+        CollectorButton {
+            label,
+            kind: CollectorButtonKind::Window { danger },
+        },
     )
+}
+
+fn paint_centered_button_text(
+    ui: &egui::Ui,
+    rect: Rect,
+    value: &str,
+    color: Color32,
+    emphasized: bool,
+) {
+    let position = rect.center();
+    let font = FontId::proportional(UI_FONT_SIZE);
+    let weight = if emphasized { 0.55 } else { 0.35 };
+
+    ui.painter()
+        .text(position, Align2::CENTER_CENTER, value, font.clone(), color);
+    ui.painter().text(
+        position + egui::vec2(weight, 0.0),
+        Align2::CENTER_CENTER,
+        value,
+        font,
+        color,
+    );
+}
+
+fn paint_left_centered_text(ui: &egui::Ui, rect: Rect, value: &str, color: Color32) {
+    let position = egui::pos2(rect.left(), rect.center().y);
+    let font = FontId::proportional(UI_FONT_SIZE);
+
+    ui.painter()
+        .text(position, Align2::LEFT_CENTER, value, font.clone(), color);
+    ui.painter().text(
+        position + egui::vec2(0.35, 0.0),
+        Align2::LEFT_CENTER,
+        value,
+        font,
+        color,
+    );
 }
 
 fn draw_status_tile(ui: &egui::Ui, rect: Rect, label: &str, value: &str, status_color: Color32) {
     paint_card(ui, rect, 18, SURFACE_RAISED, LINE);
     ui.painter().circle_filled(
-        egui::pos2(rect.left() + 11.0, rect.top() + 10.0),
+        egui::pos2(rect.left() + 14.5, rect.top() + 13.5),
         3.5,
         status_color,
     );
-    paint_text(
-        ui,
-        egui::pos2(rect.left() + 24.0, rect.top() + 5.0),
-        Align2::LEFT_TOP,
-        label,
-        10.0,
-        TEXT_MUTED,
+
+    let label_top = rect.top() + STATUS_LABEL_TOP_PADDING;
+    let label_bottom = label_top + STATUS_LABEL_HEIGHT;
+    let label_rect = Rect::from_min_max(
+        egui::pos2(rect.left() + 24.0, label_top),
+        egui::pos2(rect.right() - 10.0, label_bottom),
     );
-    paint_text(
-        ui,
-        egui::pos2(rect.left() + 12.0, rect.top() + 25.0),
-        Align2::LEFT_TOP,
+    let value_rect = Rect::from_min_max(
+        egui::pos2(rect.left() + 12.0, label_bottom),
+        egui::pos2(rect.right() - 10.0, rect.bottom() - STATUS_VALUE_BOTTOM_PADDING),
+    );
+
+    paint_left_centered_text(ui, label_rect, label, TEXT_MUTED);
+    paint_left_centered_text(ui, value_rect, value, TEXT);
+}
+
+struct JournalLine<'a> {
+    value: &'a str,
+    color: Color32,
+    selected: bool,
+}
+
+impl egui::Widget for JournalLine<'_> {
+    fn ui(self, ui: &mut egui::Ui) -> egui::Response {
+        let desired_size = ui.available_size_before_wrap();
+        let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
+
+        if self.selected {
+            ui.painter().rect_filled(rect, 0, ACCENT_DIM);
+        }
+
+        ui.painter().text(
+            rect.left_top(),
+            Align2::LEFT_TOP,
+            self.value,
+            FontId::monospace(MONO_FONT_SIZE),
+            self.color,
+        );
+
+        response
+    }
+}
+
+fn journal_line_widget(value: &str, color: Color32, selected: bool) -> JournalLine<'_> {
+    JournalLine {
         value,
-        13.0,
-        TEXT,
+        color,
+        selected,
+    }
+}
+
+fn paint_log_scrollbar(
+    ui: &egui::Ui,
+    logs_view: Rect,
+    content_height: f32,
+    visible_height: f32,
+    scroll_offset: f32,
+) {
+    if content_height <= visible_height || visible_height <= 0.0 {
+        return;
+    }
+
+    let track = Rect::from_min_max(
+        egui::pos2(logs_view.right() - 12.0, logs_view.top() + 10.0),
+        egui::pos2(logs_view.right() - 6.0, logs_view.bottom() - 10.0),
     );
+    let track_height = track.height().max(1.0);
+    let thumb_height = (track_height * visible_height / content_height)
+        .clamp(24.0, track_height);
+    let max_offset = (content_height - visible_height).max(1.0);
+    let travel = (track_height - thumb_height).max(0.0);
+    let fraction = (scroll_offset / max_offset).clamp(0.0, 1.0);
+    let thumb_top = track.top() + travel * fraction;
+    let thumb = Rect::from_min_max(
+        egui::pos2(logs_view.right() - 14.0, thumb_top),
+        egui::pos2(logs_view.right() - 4.0, thumb_top + thumb_height),
+    );
+
+    paint_pill(ui, track, LINE, LINE);
+    paint_pill(ui, thumb, TEXT_MUTED, TEXT_MUTED);
 }
 
 fn status_copy(
@@ -1436,6 +1756,19 @@ mod tests {
             layout.copy_logs.left() - layout.update_button.right(),
             LOG_ACTION_GAP
         );
+    }
+
+    #[test]
+    fn gdi_round_rect_diameter_maps_to_half_radius() {
+        assert_eq!(gdi_corner_radius(24), 12);
+        assert_eq!(gdi_corner_radius(18), 9);
+    }
+
+    #[test]
+    fn portable_typography_uses_windows_font_heights() {
+        assert_eq!(windows_font_size(11.0), UI_FONT_SIZE);
+        assert_eq!(windows_font_size(19.0), SECTION_FONT_SIZE);
+        assert_eq!(windows_font_size(27.0), TITLE_FONT_SIZE);
     }
 
     #[test]
