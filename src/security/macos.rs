@@ -36,10 +36,7 @@ pub(super) fn load_access_key(service: &str, account: &str) -> Result<Option<Str
         mirror_to_keyring(service, account, &selected);
     }
 
-    if protected.is_some()
-        && system.is_some()
-        && protected.as_deref() != system.as_deref()
-    {
+    if protected.is_some() && system.is_some() && protected.as_deref() != system.as_deref() {
         let selected_id = credential_id_from_access_key(&selected)?;
 
         diagnostics::warn(
