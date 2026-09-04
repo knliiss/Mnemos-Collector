@@ -19,6 +19,7 @@ use crate::spool::{PendingReport, ReportSpool};
 use crate::update::{UpdateCoordinator, UpdateHandoff};
 
 const MAX_REPORTS_PER_TICK: usize = 16;
+const MAX_PENDING_REPORT_AGE_SECONDS: i64 = 30 * 60;
 const STARTUP_LOG_FRESHNESS: Duration = Duration::from_secs(60);
 const RECONNECT_STABILITY_WINDOW: Duration = Duration::from_secs(30);
 
@@ -73,9 +74,10 @@ impl CollectorApplication {
         access_key: String,
         config: CollectorApplicationConfig,
     ) -> Result<Self> {
-        let spool = ReportSpool::open_default()
+        let mut spool = ReportSpool::open_default()
             .await
             .context("failed to open reliable report spool")?;
+        discard_expired_reports(&mut spool).await?;
         let collector_id = credential_id_from_access_key(&access_key)?;
         let update_coordinator = UpdateCoordinator::from_build(collector_id)
             .context("failed to initialize collector update coordinator")?;
@@ -552,6 +554,8 @@ impl CollectorApplication {
     }
 
     async fn deliver_pending_reports(&mut self) -> Result<()> {
+        discard_expired_reports(&mut self.spool).await?;
+
         for _ in 0..MAX_REPORTS_PER_TICK {
             let Some(pending) = self.spool.front().cloned() else {
                 return Ok(());
@@ -711,6 +715,25 @@ impl CollectorApplication {
         diagnostics::set_realtime_connected(false);
         diagnostics::set_observing(false);
     }
+}
+
+async fn discard_expired_reports(spool: &mut ReportSpool) -> Result<()> {
+    let cutoff = Utc::now() - chrono::Duration::seconds(MAX_PENDING_REPORT_AGE_SECONDS);
+    let discarded = spool
+        .discard_before(cutoff)
+        .await
+        .context("failed to expire stale pending reports")?;
+
+    if discarded > 0 {
+        diagnostics::warn(
+            "spool",
+            format!(
+                "Discarded {discarded} pending report(s) older than 30 minutes instead of replaying stale events"
+            ),
+        );
+    }
+
+    Ok(())
 }
 
 fn connection_is_stable(connected_at: Instant, now: Instant) -> bool {

@@ -138,6 +138,29 @@ impl ReportSpool {
         Ok(())
     }
 
+    pub async fn discard_before(&mut self, cutoff: DateTime<Utc>) -> Result<usize> {
+        let previous = self.reports.clone();
+        let previous_len = previous.len();
+
+        self.reports.retain(|report| report.observed_at >= cutoff);
+
+        let discarded = previous_len.saturating_sub(self.reports.len());
+
+        if discarded == 0 {
+            return Ok(0);
+        }
+
+        if let Err(error) = self.persist().await {
+            self.reports = previous;
+            self.publish_state();
+            return Err(error);
+        }
+
+        self.publish_state();
+
+        Ok(discarded)
+    }
+
     pub async fn acknowledge(&mut self, message_id: Uuid) -> Result<()> {
         let Some(front) = self.reports.front() else {
             bail!("cannot acknowledge a report from an empty spool");
@@ -309,11 +332,15 @@ mod tests {
     use crate::protocol::GlobalEventType;
 
     fn report() -> PendingReport {
+        report_at(Utc::now())
+    }
+
+    fn report_at(observed_at: DateTime<Utc>) -> PendingReport {
         PendingReport::new(
             CollectorEvent::Global {
                 event_type: GlobalEventType::Moon,
             },
-            Utc::now(),
+            observed_at,
         )
     }
 
@@ -337,6 +364,37 @@ mod tests {
 
         let empty = ReportSpool::open(&path, 8).await.unwrap();
         assert!(empty.is_empty());
+
+        let _ = fs::remove_dir_all(directory).await;
+    }
+
+    #[tokio::test]
+    async fn discards_expired_reports_and_persists_the_remaining_queue() {
+        let directory = std::env::temp_dir().join(format!("mnemos-spool-{}", Uuid::now_v7()));
+        let path = directory.join("pending-reports.json");
+        let mut spool = ReportSpool::open(&path, 8).await.unwrap();
+        let now = Utc::now();
+        let expired = report_at(now - chrono::Duration::hours(2));
+        let retained = report_at(now - chrono::Duration::minutes(5));
+        let retained_id = retained.message_id;
+
+        spool.enqueue(expired).await.unwrap();
+        spool.enqueue(retained).await.unwrap();
+
+        let discarded = spool
+            .discard_before(now - chrono::Duration::minutes(30))
+            .await
+            .unwrap();
+
+        assert_eq!(discarded, 1);
+        assert_eq!(spool.len(), 1);
+        assert_eq!(spool.front().unwrap().message_id, retained_id);
+        drop(spool);
+
+        let reopened = ReportSpool::open(&path, 8).await.unwrap();
+
+        assert_eq!(reopened.len(), 1);
+        assert_eq!(reopened.front().unwrap().message_id, retained_id);
 
         let _ = fs::remove_dir_all(directory).await;
     }
