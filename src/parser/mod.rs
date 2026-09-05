@@ -263,7 +263,8 @@ fn parse_legacy_global(payload: &str) -> Option<GlobalEventType> {
         return Some(GlobalEventType::Moon);
     }
 
-    if payload.contains("Небо темнеет и окутывается глубокой тенью") {
+    if payload.contains("Небо темнеет и окутывается глубокой тенью")
+    {
         return Some(GlobalEventType::Eclipse);
     }
 
@@ -271,7 +272,8 @@ fn parse_legacy_global(payload: &str) -> Option<GlobalEventType> {
         return Some(GlobalEventType::Explosion);
     }
 
-    if payload.contains("комета проносится по небу") && payload.contains("хаоса") {
+    if payload.contains("комета проносится по небу") && payload.contains("хаоса")
+    {
         return Some(GlobalEventType::CometChaos);
     }
 
