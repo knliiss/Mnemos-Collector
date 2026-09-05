@@ -4,6 +4,7 @@ pub mod cristalix;
 pub mod desktop;
 pub mod diagnostics;
 pub mod launch;
+pub mod localization;
 pub mod parser;
 pub mod platform;
 pub mod protocol;
