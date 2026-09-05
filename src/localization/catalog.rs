@@ -312,7 +312,7 @@ impl CompiledLanguage {
                     .map(|value| (normalize_value(value), *item_type))
             })
             .collect::<Vec<_>>();
-        item_types.sort_by(|left, right| right.0.len().cmp(&left.0.len()));
+        item_types.sort_by_key(|item| std::cmp::Reverse(item.0.len()));
         item_types.dedup();
 
         let booster_types = BOOSTER_KEYS
