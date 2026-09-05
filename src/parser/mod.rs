@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::localization::{SaoLocalizationStore, sao_localizations};
-use crate::protocol::CollectorEvent;
+use crate::protocol::{CollectorEvent, GlobalEventType};
 
 static MASTER_SWORD_SERVER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"Joining server Мастера Мечей #\d+").expect("valid regex"));
@@ -250,7 +250,32 @@ fn parse_booster(payload: &str, localizations: &SaoLocalizationStore) -> Option<
 fn parse_global(payload: &str, localizations: &SaoLocalizationStore) -> Option<CollectorEvent> {
     localizations
         .parse_global(payload)
+        .or_else(|| parse_legacy_global(payload))
         .map(|event_type| CollectorEvent::Global { event_type })
+}
+
+fn parse_legacy_global(payload: &str) -> Option<GlobalEventType> {
+    if payload.contains("Тьма наступает с заходом солнца") {
+        return Some(GlobalEventType::Darkness);
+    }
+
+    if payload.contains("кровавая луна") {
+        return Some(GlobalEventType::Moon);
+    }
+
+    if payload.contains("Небо темнеет и окутывается глубокой тенью") {
+        return Some(GlobalEventType::Eclipse);
+    }
+
+    if payload.contains("тепло солнца касается вашей кожи") {
+        return Some(GlobalEventType::Explosion);
+    }
+
+    if payload.contains("комета проносится по небу") && payload.contains("хаоса") {
+        return Some(GlobalEventType::CometChaos);
+    }
+
+    None
 }
 
 fn is_legacy_raid_open(payload: &str) -> bool {
