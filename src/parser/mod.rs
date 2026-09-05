@@ -95,8 +95,8 @@ impl LogParser {
             if self.mode.accepts_events() {
                 self.mode = GameMode::MasterSword;
 
-                let locations = localized_raid_open
-                    .unwrap_or_else(|| parse_legacy_raid_locations(payload));
+                let locations =
+                    localized_raid_open.unwrap_or_else(|| parse_legacy_raid_locations(payload));
 
                 if locations.is_empty() {
                     self.pending_raid = Some(BTreeSet::new());

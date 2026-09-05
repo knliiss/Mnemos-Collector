@@ -70,7 +70,9 @@ pub struct SaoLocalizationStore {
 impl SaoLocalizationStore {
     pub(super) fn from_snapshot(snapshot: LocalizationSnapshot) -> Result<Self> {
         Ok(Self {
-            inner: Arc::new(RwLock::new(SaoLocalizationCatalog::from_snapshot(snapshot)?)),
+            inner: Arc::new(RwLock::new(SaoLocalizationCatalog::from_snapshot(
+                snapshot,
+            )?)),
         })
     }
 
@@ -352,10 +354,7 @@ impl CompiledLanguage {
 
         for (localized_type, item_type) in &self.item_types {
             if let Some(item_name) = phrase.strip_prefix(localized_type)
-                && item_name
-                    .chars()
-                    .next()
-                    .is_some_and(char::is_whitespace)
+                && item_name.chars().next().is_some_and(char::is_whitespace)
             {
                 return Some((*item_type, item_name.trim_start()));
             }
@@ -584,7 +583,9 @@ fn rarity_from_style_prefix(value: &str) -> Option<ItemRarity> {
 }
 
 fn normalize_value(value: &str) -> String {
-    normalize_log_text(strip_style_prefix(value)).trim().to_owned()
+    normalize_log_text(strip_style_prefix(value))
+        .trim()
+        .to_owned()
 }
 
 fn strip_style_prefix(value: &str) -> &str {
@@ -627,10 +628,25 @@ mod tests {
 
     #[test]
     fn canonical_item_key_type_detection_distinguishes_drop_families() {
-        assert!(item_key_matches_type("sao.item.l28_7.name", ItemType::Sword));
-        assert!(item_key_matches_type("sao.item.pet_l28_7.name", ItemType::Pet));
-        assert!(item_key_matches_type("sao.item.auraFire.name", ItemType::Aura));
-        assert!(item_key_matches_type("sao.item.book_l28_7.name", ItemType::Book));
-        assert!(item_key_matches_type("sao.item.d1_41.name", ItemType::Jewelry));
+        assert!(item_key_matches_type(
+            "sao.item.l28_7.name",
+            ItemType::Sword
+        ));
+        assert!(item_key_matches_type(
+            "sao.item.pet_l28_7.name",
+            ItemType::Pet
+        ));
+        assert!(item_key_matches_type(
+            "sao.item.auraFire.name",
+            ItemType::Aura
+        ));
+        assert!(item_key_matches_type(
+            "sao.item.book_l28_7.name",
+            ItemType::Book
+        ));
+        assert!(item_key_matches_type(
+            "sao.item.d1_41.name",
+            ItemType::Jewelry
+        ));
     }
 }

@@ -9,9 +9,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use super::catalog::{
-    LocalizationLanguageSnapshot, LocalizationSnapshot, SaoLocalizationStore,
-};
+use super::catalog::{LocalizationLanguageSnapshot, LocalizationSnapshot, SaoLocalizationStore};
 use crate::diagnostics;
 
 const MANIFEST_URL: &str = "https://webdata.c7x.dev/client/lang.json";
@@ -189,7 +187,12 @@ async fn download_language_pack(
         .await
         .with_context(|| format!("failed to download SAO localization pack {}", pie.hash))?
         .error_for_status()
-        .with_context(|| format!("SAO localization pack {} returned an error status", pie.hash))?
+        .with_context(|| {
+            format!(
+                "SAO localization pack {} returned an error status",
+                pie.hash
+            )
+        })?
         .bytes()
         .await
         .with_context(|| format!("failed to read SAO localization pack {}", pie.hash))?;

@@ -81,12 +81,14 @@ fn parses_supported_sao_locales_from_bundled_fallback() {
         );
 
         let drop_events = parser.consume_line(&chat(case.item_drop));
-        let [CollectorEvent::ItemDrop {
-            item_name,
-            item_type,
-            item_rarity,
-            dropped_for,
-        }] = drop_events.as_slice()
+        let [
+            CollectorEvent::ItemDrop {
+                item_name,
+                item_type,
+                item_rarity,
+                dropped_for,
+            },
+        ] = drop_events.as_slice()
         else {
             panic!("expected one item drop for {}", case.item_drop);
         };

@@ -5,8 +5,8 @@ use std::sync::LazyLock;
 
 pub use catalog::{LocalizedBooster, LocalizedItemDrop, SaoLocalizationStore};
 
-use catalog::LocalizationSnapshot;
 use crate::diagnostics;
+use catalog::LocalizationSnapshot;
 
 static GLOBAL_STORE: LazyLock<SaoLocalizationStore> = LazyLock::new(|| {
     let bundled = serde_json::from_str::<LocalizationSnapshot>(include_str!(
