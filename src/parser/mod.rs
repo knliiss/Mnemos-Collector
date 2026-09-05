@@ -224,6 +224,7 @@ fn parse_drop(payload: &str, localizations: &SaoLocalizationStore) -> Option<Col
     }
 
     Some(CollectorEvent::ItemDrop {
+        item_key: drop.item_key,
         item_name: drop.item_name,
         item_type: drop.item_type,
         item_rarity: drop.item_rarity,

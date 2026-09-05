@@ -14,6 +14,7 @@ fn parses_real_book_drop_with_ascii_player_separator() {
     assert_eq!(
         events,
         vec![CollectorEvent::ItemDrop {
+            item_key: None,
             item_name: "Темная жатва".to_owned(),
             item_type: ItemType::Book,
             item_rarity: ItemRarity::Mythical,
@@ -28,6 +29,7 @@ fn serializes_book_drop_with_backend_contract_name() {
     let observed_at = Utc.with_ymd_and_hms(2026, 8, 28, 15, 43, 12).unwrap();
     let report = EventReport::new(
         CollectorEvent::ItemDrop {
+            item_key: None,
             item_name: "Темная жатва".to_owned(),
             item_type: ItemType::Book,
             item_rarity: ItemRarity::Mythical,

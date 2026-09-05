@@ -87,6 +87,7 @@ fn parses_supported_sao_locales_from_bundled_fallback() {
                 item_type,
                 item_rarity,
                 dropped_for,
+                ..
             },
         ] = drop_events.as_slice()
         else {
