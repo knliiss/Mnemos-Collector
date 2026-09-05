@@ -17,7 +17,7 @@ static LEGACY_RAID_LOCATION: LazyLock<Regex> =
 static NICKNAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[\p{L}0-9_]{4,20}$").expect("valid regex"));
 static PLAYER_CHAT_MESSAGE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[#(?:\d+|\?)\].*»").expect("valid regex"));
+    LazyLock::new(|| Regex::new(r"\[#(?:\d+|\?)\]\s*»").expect("valid regex"));
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum GameMode {
