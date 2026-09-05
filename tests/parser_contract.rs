@@ -206,19 +206,25 @@ fn parses_real_single_line_raid_announcement() {
 }
 
 #[test]
-fn parses_singular_raid_close_announcement_with_escaped_newlines() {
+fn parses_singular_raid_open_and_ignores_singular_raid_close_with_escaped_newlines() {
     let mut parser = LogParser::default();
-    let closing = chat(
-        "[Рейд] » Закрылись врата на рейд \"Темный лес\" (локация #1)\\nЗакрылись врата на рейд \"Луга с обелисками\" (локация #16)\\nЗакрылись врата на рейд \"Подводный храм\" (локация #17)",
+    let opening = chat(
+        "[Рейд] » Открылись врата на рейд \"Темный лес\" (локация #1)\\nОткрылись врата на рейд \"Луга с обелисками\" (локация #16)\\nОткрылись врата на рейд \"Подводный храм\" (локация #17)",
     );
 
     assert_eq!(
-        parser.consume_line(&closing),
+        parser.consume_line(&opening),
         vec![CollectorEvent::Raid {
             locations: vec![1, 16, 17],
         }],
     );
     assert_eq!(parser.mode(), GameMode::MasterSword);
+
+    let closing = chat(
+        "[Рейд] » Закрылись врата на рейд \"Темный лес\" (локация #1)\\nЗакрылись врата на рейд \"Луга с обелисками\" (локация #16)\\nЗакрылись врата на рейд \"Подводный храм\" (локация #17)",
+    );
+
+    assert!(parser.consume_line(&closing).is_empty());
 }
 
 #[test]

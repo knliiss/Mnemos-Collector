@@ -94,19 +94,8 @@ impl LogParser {
         }
 
         if is_raid_close(payload) {
-            let mut events = self.flush_pending_raid();
+            let events = self.flush_pending_raid();
             self.pending_raid = None;
-
-            if events.is_empty() && is_singular_raid_close(payload) && self.mode.accepts_events() {
-                let locations = parse_raid_locations(payload);
-
-                if !locations.is_empty() {
-                    self.mode = GameMode::MasterSword;
-                    events.push(CollectorEvent::Raid {
-                        locations: locations.into_iter().collect(),
-                    });
-                }
-            }
 
             return events;
         }
@@ -263,15 +252,13 @@ fn parse_global(payload: &str) -> Option<CollectorEvent> {
 }
 
 fn is_raid_open(payload: &str) -> bool {
-    payload.contains("[Рейд]") && payload.contains("Открылись врата на рейды")
+    payload.contains("[Рейд]")
+        && (payload.contains("Открылись врата на рейды")
+            || payload.contains("Открылись врата на рейд \""))
 }
 
 fn is_raid_close(payload: &str) -> bool {
     payload.contains("[Рейд]") && payload.contains("Закрылись врата")
-}
-
-fn is_singular_raid_close(payload: &str) -> bool {
-    payload.contains("[Рейд]") && payload.contains("Закрылись врата на рейд \"")
 }
 
 fn parse_raid_locations(payload: &str) -> BTreeSet<u16> {
