@@ -22,6 +22,7 @@ fn parses_item_drop_fixture_exactly() {
     assert_eq!(
         events,
         vec![CollectorEvent::ItemDrop {
+            item_key: None,
             item_name: "Клинок Бури".to_owned(),
             item_type: ItemType::Sword,
             item_rarity: ItemRarity::Mythical,

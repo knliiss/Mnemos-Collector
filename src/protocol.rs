@@ -44,6 +44,8 @@ pub enum GlobalEventType {
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CollectorEvent {
     ItemDrop {
+        #[serde(rename = "itemKey", skip_serializing_if = "Option::is_none")]
+        item_key: Option<String>,
         #[serde(rename = "itemName")]
         item_name: String,
         #[serde(rename = "itemType")]

@@ -21,6 +21,7 @@ fn parses_full_player_prefix_and_ignores_clan_title_rank_and_top_position() {
     assert_eq!(
         events,
         vec![CollectorEvent::ItemDrop {
+            item_key: None,
             item_name: "Лесной меч".to_owned(),
             item_type: ItemType::Sword,
             item_rarity: ItemRarity::Mythical,

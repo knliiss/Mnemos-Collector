@@ -1,0 +1,51 @@
+name: Fix SAO Clippy
+
+on:
+  push:
+    branches:
+      - feat/sao-localization
+    paths:
+      - .github/workflows/fix-sao-clippy.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/sao-localization
+          fetch-depth: 0
+
+      - name: Apply Clippy suggestion
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("src/localization/catalog.rs")
+          content = path.read_text()
+          old = 'item_types.sort_by(|left, right| right.0.len().cmp(&left.0.len()));'
+          new = 'item_types.sort_by_key(|item| std::cmp::Reverse(item.0.len()));'
+
+          if old not in content:
+              raise SystemExit("expected Clippy target line was not found")
+
+          path.write_text(content.replace(old, new, 1))
+
+      - name: Install Rust formatter
+        run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt
+
+      - name: Format Rust sources
+        run: cargo +1.98.0 fmt --all
+
+      - name: Commit fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/localization/catalog.rs
+          git commit -m "Fix SAO localization Clippy warning"
+          git push origin HEAD:feat/sao-localization
