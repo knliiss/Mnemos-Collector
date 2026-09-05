@@ -7,26 +7,17 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::protocol::{BoosterType, CollectorEvent, GlobalEventType, ItemRarity, ItemType};
+use crate::localization::{SaoLocalizationStore, sao_localizations};
+use crate::protocol::CollectorEvent;
 
 static MASTER_SWORD_SERVER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"Joining server Мастера Мечей #\d+").expect("valid regex"));
-static DROP_LINE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"^(?P<player>.+?)\s+\[#(?:\d+|\?)\]\s+выбил\s+"(?P<rarity>[^"]+)"\s+(?P<item_type>оружие|питомца|реликвию|ауру|книгу)\s+(?P<item_name>.+?)\s*$"#,
-    )
-    .expect("valid regex")
-});
-static BOOSTER_LINE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"^(?P<player>.+?)\s+активировал\s+"Бустер\s+(?P<booster>удачи|денег|урона|силы)\s+x[^"]+"\s+на\s+\S+\s*$"#,
-    )
-    .expect("valid regex")
-});
-static RAID_LOCATION: LazyLock<Regex> =
+static LEGACY_RAID_LOCATION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\(локация\s+#(?P<location>\d+)\)").expect("valid regex"));
 static NICKNAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[\p{L}0-9_]{4,20}$").expect("valid regex"));
+static PLAYER_CHAT_MESSAGE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[#(?:\d+|\?)\].*»").expect("valid regex"));
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum GameMode {
@@ -43,13 +34,28 @@ impl GameMode {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct LogParser {
     mode: GameMode,
     pending_raid: Option<BTreeSet<u16>>,
+    localizations: SaoLocalizationStore,
+}
+
+impl Default for LogParser {
+    fn default() -> Self {
+        Self::new(sao_localizations())
+    }
 }
 
 impl LogParser {
+    pub fn new(localizations: SaoLocalizationStore) -> Self {
+        Self {
+            mode: GameMode::Unknown,
+            pending_raid: None,
+            localizations,
+        }
+    }
+
     pub fn mode(&self) -> GameMode {
         self.mode
     }
@@ -61,7 +67,11 @@ impl LogParser {
             return;
         };
 
-        if is_master_sword_activity(payload) {
+        if is_player_chat_message(payload) {
+            return;
+        }
+
+        if is_master_sword_activity(payload, &self.localizations) {
             self.mode = GameMode::MasterSword;
         }
     }
@@ -73,13 +83,20 @@ impl LogParser {
             return Vec::new();
         };
 
-        if is_raid_open(payload) {
+        if is_player_chat_message(payload) {
+            return Vec::new();
+        }
+
+        let localized_raid_open = self.localizations.raid_open_locations(payload);
+
+        if localized_raid_open.is_some() || is_legacy_raid_open(payload) {
             let mut events = self.flush_pending_raid();
 
             if self.mode.accepts_events() {
                 self.mode = GameMode::MasterSword;
 
-                let locations = parse_raid_locations(payload);
+                let locations = localized_raid_open
+                    .unwrap_or_else(|| parse_legacy_raid_locations(payload));
 
                 if locations.is_empty() {
                     self.pending_raid = Some(BTreeSet::new());
@@ -93,14 +110,14 @@ impl LogParser {
             return events;
         }
 
-        if is_raid_close(payload) {
+        if self.localizations.is_raid_close(payload) || is_legacy_raid_close(payload) {
             let events = self.flush_pending_raid();
             self.pending_raid = None;
 
             return events;
         }
 
-        let raid_locations = parse_raid_locations(payload);
+        let raid_locations = parse_legacy_raid_locations(payload);
 
         if !raid_locations.is_empty()
             && let Some(locations) = self.pending_raid.as_mut()
@@ -115,9 +132,9 @@ impl LogParser {
             return events;
         }
 
-        let parsed = parse_drop(payload)
-            .or_else(|| parse_booster(payload))
-            .or_else(|| parse_global(payload));
+        let parsed = parse_drop(payload, &self.localizations)
+            .or_else(|| parse_booster(payload, &self.localizations))
+            .or_else(|| parse_global(payload, &self.localizations));
 
         if let Some(event) = parsed {
             self.mode = GameMode::MasterSword;
@@ -178,116 +195,77 @@ fn extract_chat_payload(line: &str) -> Option<&str> {
     Some(payload.trim_start_matches([':', ' ']).trim())
 }
 
-fn is_master_sword_activity(payload: &str) -> bool {
-    is_raid_open(payload)
-        || is_raid_close(payload)
-        || !parse_raid_locations(payload).is_empty()
-        || parse_drop(payload).is_some()
-        || parse_booster(payload).is_some()
-        || parse_global(payload).is_some()
+fn is_player_chat_message(payload: &str) -> bool {
+    PLAYER_CHAT_MESSAGE.is_match(payload)
 }
 
-fn parse_drop(payload: &str) -> Option<CollectorEvent> {
-    let captures = DROP_LINE.captures(payload)?;
-    let player_prefix = captures.name("player")?.as_str();
+fn is_master_sword_activity(payload: &str, localizations: &SaoLocalizationStore) -> bool {
+    localizations.raid_open_locations(payload).is_some()
+        || localizations.is_raid_close(payload)
+        || is_legacy_raid_open(payload)
+        || is_legacy_raid_close(payload)
+        || !parse_legacy_raid_locations(payload).is_empty()
+        || parse_drop(payload, localizations).is_some()
+        || parse_booster(payload, localizations).is_some()
+        || parse_global(payload, localizations).is_some()
+}
 
-    if player_prefix.contains('»') {
+fn parse_drop(payload: &str, localizations: &SaoLocalizationStore) -> Option<CollectorEvent> {
+    let drop = localizations.parse_item_drop(payload)?;
+
+    if drop.player_prefix.contains('»') {
         return None;
     }
 
-    let item_rarity = parse_rarity(captures.name("rarity")?.as_str())?;
-    let item_type = parse_item_type(captures.name("item_type")?.as_str())?;
-    let dropped_for = extract_nickname(player_prefix)?;
-    let item_name = captures.name("item_name")?.as_str().trim();
+    let dropped_for = extract_nickname(&drop.player_prefix)?;
 
-    if !(4..=24).contains(&item_name.chars().count()) {
+    if !(1..=96).contains(&drop.item_name.chars().count()) {
         return None;
     }
 
     Some(CollectorEvent::ItemDrop {
-        item_name: item_name.to_owned(),
-        item_type,
-        item_rarity,
+        item_name: drop.item_name,
+        item_type: drop.item_type,
+        item_rarity: drop.item_rarity,
         dropped_for,
     })
 }
 
-fn parse_booster(payload: &str) -> Option<CollectorEvent> {
-    let captures = BOOSTER_LINE.captures(payload)?;
-    let activated_by = extract_nickname(captures.name("player")?.as_str())?;
-    let booster_type = match captures.name("booster")?.as_str() {
-        "удачи" => BoosterType::Luck,
-        "денег" => BoosterType::Money,
-        "урона" => BoosterType::Damage,
-        "силы" => BoosterType::Power,
-        _ => return None,
-    };
+fn parse_booster(payload: &str, localizations: &SaoLocalizationStore) -> Option<CollectorEvent> {
+    let booster = localizations.parse_booster(payload)?;
+
+    if booster.player_prefix.contains('»') {
+        return None;
+    }
+
+    let activated_by = extract_nickname(&booster.player_prefix)?;
 
     Some(CollectorEvent::Booster {
-        booster_type,
+        booster_type: booster.booster_type,
         activated_by,
     })
 }
 
-fn parse_global(payload: &str) -> Option<CollectorEvent> {
-    let event_type = if payload.contains("Тьма наступает с заходом солнца")
-    {
-        GlobalEventType::Darkness
-    } else if payload.contains("кровавая луна") {
-        GlobalEventType::Moon
-    } else if payload.contains("Небо темнеет и окутывается глубокой тенью")
-    {
-        GlobalEventType::Eclipse
-    } else if payload.contains("тепло солнца касается вашей кожи") {
-        GlobalEventType::Explosion
-    } else if payload.contains("По мере того, как комета проносится по небу")
-        && payload.contains("чувство надвигающегося хаоса")
-    {
-        GlobalEventType::CometChaos
-    } else {
-        return None;
-    };
-
-    Some(CollectorEvent::Global { event_type })
+fn parse_global(payload: &str, localizations: &SaoLocalizationStore) -> Option<CollectorEvent> {
+    localizations
+        .parse_global(payload)
+        .map(|event_type| CollectorEvent::Global { event_type })
 }
 
-fn is_raid_open(payload: &str) -> bool {
-    payload.contains("[Рейд]")
-        && (payload.contains("Открылись врата на рейды")
-            || payload.contains("Открылись врата на рейд \""))
+fn is_legacy_raid_open(payload: &str) -> bool {
+    payload.contains("[Рейд]") && payload.contains("Открылись врата на рейды")
 }
 
-fn is_raid_close(payload: &str) -> bool {
+fn is_legacy_raid_close(payload: &str) -> bool {
     payload.contains("[Рейд]") && payload.contains("Закрылись врата")
 }
 
-fn parse_raid_locations(payload: &str) -> BTreeSet<u16> {
-    RAID_LOCATION
+fn parse_legacy_raid_locations(payload: &str) -> BTreeSet<u16> {
+    LEGACY_RAID_LOCATION
         .captures_iter(payload)
         .filter_map(|captures| captures.name("location"))
         .filter_map(|location| location.as_str().parse().ok())
         .collect()
-}
-
-fn parse_rarity(raw: &str) -> Option<ItemRarity> {
-    if raw.starts_with("Мифическ") {
-        Some(ItemRarity::Mythical)
-    } else if raw.starts_with("Секретн") {
-        Some(ItemRarity::Secret)
-    } else {
-        None
-    }
-}
-
-fn parse_item_type(raw: &str) -> Option<ItemType> {
-    match raw {
-        "оружие" => Some(ItemType::Sword),
-        "ауру" => Some(ItemType::Aura),
-        "питомца" => Some(ItemType::Pet),
-        "книгу" => Some(ItemType::Book),
-        "реликвию" => Some(ItemType::Jewelry),
-        _ => None,
-    }
 }
 
 fn extract_nickname(player_prefix: &str) -> Option<String> {
