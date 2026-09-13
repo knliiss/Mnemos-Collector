@@ -1,0 +1,166 @@
+name: Apply Booster Parser Hotfix
+
+on:
+  push:
+    branches:
+      - fix/booster-localization-fallback
+    paths:
+      - .github/workflows/apply-booster-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout hotfix branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/booster-localization-fallback
+          fetch-depth: 0
+
+      - name: Patch booster parser and regression coverage
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("src/parser/mod.rs")
+          content = path.read_text()
+
+          old_import = "use crate::protocol::{CollectorEvent, GlobalEventType};"
+          new_import = "use crate::protocol::{BoosterType, CollectorEvent, GlobalEventType};"
+          if old_import not in content:
+              raise SystemExit("protocol import target not found")
+          content = content.replace(old_import, new_import, 1)
+
+          raid_static = '''static LEGACY_RAID_LOCATION: LazyLock<Regex> =
+              LazyLock::new(|| Regex::new(r"\\(локация\\s+#(?P<location>\\d+)\\)").expect("valid regex"));
+'''
+          booster_static = raid_static + '''static LEGACY_BOOSTER_LINE: LazyLock<Regex> = LazyLock::new(|| {
+              Regex::new(
+                  r#"^(?P<player>.+?)\\s+активировал\\s+\"Бустер\\s+(?P<booster>удачи|денег|урона|силы)\\s+x[^\"]+\"\\s+на\\s+\\S+\\s*$"#,
+              )
+              .expect("valid regex")
+          });
+'''
+          if raid_static not in content:
+              raise SystemExit("legacy raid static target not found")
+          content = content.replace(raid_static, booster_static, 1)
+
+          old_parse = '''fn parse_booster(payload: &str, localizations: &SaoLocalizationStore) -> Option<CollectorEvent> {
+              let booster = localizations.parse_booster(payload)?;
+
+              if booster.player_prefix.contains('»') {
+                  return None;
+              }
+
+              let activated_by = extract_nickname(&booster.player_prefix)?;
+
+              Some(CollectorEvent::Booster {
+                  booster_type: booster.booster_type,
+                  activated_by,
+              })
+          }
+'''
+          new_parse = '''fn parse_booster(payload: &str, localizations: &SaoLocalizationStore) -> Option<CollectorEvent> {
+              if let Some(booster) = localizations.parse_booster(payload)
+                  && !booster.player_prefix.contains('»')
+                  && let Some(activated_by) = extract_nickname(&booster.player_prefix)
+              {
+                  return Some(CollectorEvent::Booster {
+                      booster_type: booster.booster_type,
+                      activated_by,
+                  });
+              }
+
+              parse_legacy_booster(payload)
+          }
+
+          fn parse_legacy_booster(payload: &str) -> Option<CollectorEvent> {
+              let captures = LEGACY_BOOSTER_LINE.captures(payload)?;
+              let player_prefix = captures.name("player")?.as_str();
+
+              if player_prefix.contains('»') {
+                  return None;
+              }
+
+              let activated_by = extract_nickname(player_prefix)?;
+              let booster_type = match captures.name("booster")?.as_str() {
+                  "удачи" => BoosterType::Luck,
+                  "денег" => BoosterType::Money,
+                  "урона" => BoosterType::Damage,
+                  "силы" => BoosterType::Power,
+                  _ => return None,
+              };
+
+              Some(CollectorEvent::Booster {
+                  booster_type,
+                  activated_by,
+              })
+          }
+'''
+          if old_parse not in content:
+              raise SystemExit("parse_booster target not found")
+          content = content.replace(old_parse, new_parse, 1)
+
+          old_test_import = "    use super::{GameMode, LogParser};\n"
+          new_test_import = "    use super::{GameMode, LogParser, parse_legacy_booster};\n    use crate::protocol::{BoosterType, CollectorEvent};\n"
+          if old_test_import not in content:
+              raise SystemExit("test import target not found")
+          content = content.replace(old_test_import, new_test_import, 1)
+
+          final_brace = "}\n"
+          tests = '''
+              #[test]
+              fn legacy_booster_fallback_recognizes_current_russian_contract() {
+                  let event = parse_legacy_booster(
+                      r#"MVP+ ┃ Booster_User активировал \"Бустер силы x1.5\" на 30м"#,
+                  );
+
+                  assert_eq!(
+                      event,
+                      Some(CollectorEvent::Booster {
+                          booster_type: BoosterType::Power,
+                          activated_by: "Booster_User".to_owned(),
+                      }),
+                  );
+              }
+
+              #[test]
+              fn legacy_booster_fallback_rejects_player_chat_lookalike() {
+                  let event = parse_legacy_booster(
+                      r#"PlayerOne [#20] » Booster_User активировал \"Бустер силы x1.5\" на 30м"#,
+                  );
+
+                  assert_eq!(event, None);
+              }
+          '''
+          last = content.rfind(final_brace)
+          if last < 0:
+              raise SystemExit("parser module closing brace not found")
+          content = content[:last] + tests + content[last:]
+          path.write_text(content)
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt,clippy
+
+      - name: Format
+        run: cargo +1.98.0 fmt --all
+
+      - name: Test hotfix
+        run: cargo +1.98.0 test --locked --all-targets --all-features
+
+      - name: Clippy
+        run: cargo +1.98.0 clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Commit hotfix and remove helper workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/parser/mod.rs
+          git rm .github/workflows/apply-booster-fix.yml
+          git commit -m "Restore booster parsing fallback"
+          git push origin HEAD:fix/booster-localization-fallback
