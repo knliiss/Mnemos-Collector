@@ -382,9 +382,8 @@ mod tests {
 
     #[test]
     fn legacy_booster_fallback_recognizes_current_russian_contract() {
-        let event = parse_legacy_booster(
-            r#"MVP+ ┃ Booster_User активировал "Бустер силы x1.5" на 30м"#,
-        );
+        let event =
+            parse_legacy_booster(r#"MVP+ ┃ Booster_User активировал "Бустер силы x1.5" на 30м"#);
 
         assert_eq!(
             event,
