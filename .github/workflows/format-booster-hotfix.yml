@@ -1,0 +1,35 @@
+name: Format Booster Hotfix
+
+on:
+  push:
+    branches:
+      - fix/booster-localization-fallback
+    paths:
+      - .github/workflows/format-booster-hotfix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/booster-localization-fallback
+          fetch-depth: 0
+
+      - name: Install rustfmt
+        run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt
+
+      - name: Format Rust sources
+        run: cargo +1.98.0 fmt --all
+
+      - name: Commit formatting
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/parser/mod.rs
+          git rm .github/workflows/format-booster-hotfix.yml
+          git commit -m "Format booster parser hotfix"
+          git push origin HEAD:fix/booster-localization-fallback
