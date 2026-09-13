@@ -8,12 +8,18 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::localization::{SaoLocalizationStore, sao_localizations};
-use crate::protocol::{CollectorEvent, GlobalEventType};
+use crate::protocol::{BoosterType, CollectorEvent, GlobalEventType};
 
 static MASTER_SWORD_SERVER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"Joining server Мастера Мечей #\d+").expect("valid regex"));
 static LEGACY_RAID_LOCATION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\(локация\s+#(?P<location>\d+)\)").expect("valid regex"));
+static LEGACY_BOOSTER_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"^(?P<player>.+?)\s+активировал\s+"Бустер\s+(?P<booster>удачи|денег|урона|силы)\s+x[^"]+"\s+на\s+\S+\s*$"#,
+    )
+    .expect("valid regex")
+});
 static NICKNAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[\p{L}0-9_]{4,20}$").expect("valid regex"));
 static PLAYER_CHAT_MESSAGE: LazyLock<Regex> =
@@ -233,16 +239,38 @@ fn parse_drop(payload: &str, localizations: &SaoLocalizationStore) -> Option<Col
 }
 
 fn parse_booster(payload: &str, localizations: &SaoLocalizationStore) -> Option<CollectorEvent> {
-    let booster = localizations.parse_booster(payload)?;
+    if let Some(booster) = localizations.parse_booster(payload)
+        && !booster.player_prefix.contains('»')
+        && let Some(activated_by) = extract_nickname(&booster.player_prefix)
+    {
+        return Some(CollectorEvent::Booster {
+            booster_type: booster.booster_type,
+            activated_by,
+        });
+    }
 
-    if booster.player_prefix.contains('»') {
+    parse_legacy_booster(payload)
+}
+
+fn parse_legacy_booster(payload: &str) -> Option<CollectorEvent> {
+    let captures = LEGACY_BOOSTER_LINE.captures(payload)?;
+    let player_prefix = captures.name("player")?.as_str();
+
+    if player_prefix.contains('»') {
         return None;
     }
 
-    let activated_by = extract_nickname(&booster.player_prefix)?;
+    let activated_by = extract_nickname(player_prefix)?;
+    let booster_type = match captures.name("booster")?.as_str() {
+        "удачи" => BoosterType::Luck,
+        "денег" => BoosterType::Money,
+        "урона" => BoosterType::Damage,
+        "силы" => BoosterType::Power,
+        _ => return None,
+    };
 
     Some(CollectorEvent::Booster {
-        booster_type: booster.booster_type,
+        booster_type,
         activated_by,
     })
 }
@@ -318,7 +346,8 @@ fn extract_nickname(player_prefix: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{GameMode, LogParser};
+    use super::{GameMode, LogParser, parse_legacy_booster};
+    use crate::protocol::{BoosterType, CollectorEvent};
 
     #[test]
     fn context_scan_recovers_master_sword_from_existing_join_line() {
@@ -349,5 +378,28 @@ mod tests {
 
         assert_eq!(parser.mode(), GameMode::MasterSword);
         assert!(parser.flush().is_empty());
+    }
+
+    #[test]
+    fn legacy_booster_fallback_recognizes_current_russian_contract() {
+        let event =
+            parse_legacy_booster(r#"MVP+ ┃ Booster_User активировал "Бустер силы x1.5" на 30м"#);
+
+        assert_eq!(
+            event,
+            Some(CollectorEvent::Booster {
+                booster_type: BoosterType::Power,
+                activated_by: "Booster_User".to_owned(),
+            }),
+        );
+    }
+
+    #[test]
+    fn legacy_booster_fallback_rejects_player_chat_lookalike() {
+        let event = parse_legacy_booster(
+            r#"PlayerOne [#20] » Booster_User активировал "Бустер силы x1.5" на 30м"#,
+        );
+
+        assert_eq!(event, None);
     }
 }
