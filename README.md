@@ -19,7 +19,7 @@ Mnemos Collector is a native desktop client that observes a local Cristalix sess
 It is intentionally more than a log tailer. The collector owns the complete client-side delivery path: installation, provisioning, credential storage, process and log discovery, SAO context detection, parsing, deduplication, durable buffering, realtime delivery, diagnostics and self-update handling.
 
 <p align="center">
-  <img src="docs/assets/readme/collector-active.jpg" width="860" alt="Mnemos Collector while actively observing Master Sword" />
+  <img src="docs/assets/readme/collector-active.webp" width="860" alt="Mnemos Collector while actively observing Master Sword" />
 </p>
 
 The UI exposes the state that matters at runtime: whether Cristalix is detected, which game mode is recognized, whether Mnemos is connected, queue pressure and diagnostic activity.
