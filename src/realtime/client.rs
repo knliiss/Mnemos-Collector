@@ -145,7 +145,6 @@ impl RealtimeClient {
     }
 
     pub async fn report_ping(&mut self, report: &ChatPingReport) -> Result<()> {
-        self.set_state(ObservationState::Observing).await?;
         self.send_json(report).await?;
         self.wait_for_report_queued(report.message_id).await
     }
