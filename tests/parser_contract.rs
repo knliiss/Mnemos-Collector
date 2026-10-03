@@ -157,27 +157,14 @@ fn parses_global_event_signatures() {
 }
 
 #[test]
-fn collects_only_raid_location_numbers() {
+fn collects_only_raid_location_numbers_from_localized_messages() {
     let mut parser = LogParser::default();
-
-    assert!(
-        parser
-            .consume_line(&chat("i [Рейд] » Открылись врата на рейды"))
-            .is_empty()
-    );
-    assert!(
-        parser
-            .consume_line(&chat("\"Темный лес\" (локация #1),"))
-            .is_empty()
-    );
-    assert!(
-        parser
-            .consume_line(&chat("\"Заброшенная Тюрьма\" (локация #13),"))
-            .is_empty()
+    let opening = chat(
+        "The gates to the raid \"Dark Forest\" are open (location #1)\\nThe gates to the raid \"Abandoned Prison\" are open (location #13)",
     );
 
     assert_eq!(
-        parser.flush(),
+        parser.consume_line(&opening),
         vec![CollectorEvent::Raid {
             locations: vec![1, 13],
         }],
@@ -185,10 +172,10 @@ fn collects_only_raid_location_numbers() {
 }
 
 #[test]
-fn parses_real_single_line_raid_announcement() {
+fn parses_multiple_current_localized_raid_announcements_in_one_log_line() {
     let mut parser = LogParser::default();
     let opening = chat(
-        "i [Рейд] » Открылись врата на рейды \"Шиноби\" (локация #3), \"Каньон\" (локация #15), \"Тайпинская башня\" (локация #21), \"Космодрайвер\" (локация #25)",
+        "Відкрилися врата на рейд \"Шиноби\" (локація #3)\\nВідкрилися врата на рейд \"Каньйон\" (локація #15)\\nВідкрилися врата на рейд \"Тайпінська вежа\" (локація #21)\\nВідкрилися врата на рейд \"Космодрайвер\" (локація #25)",
     );
 
     assert_eq!(
@@ -200,7 +187,7 @@ fn parses_real_single_line_raid_announcement() {
     assert_eq!(parser.mode(), GameMode::MasterSword);
 
     let closing = chat(
-        "i [Рейд] » Закрылись врата на рейды \"Шиноби\" (локация #3), \"Каньон\" (локация #15), \"Тайпинская башня\" (локация #21), \"Космодрайвер\" (локация #25)",
+        "Зачинилися врата на рейд \"Шиноби\" (локація #3)\\nЗачинилися врата на рейд \"Каньйон\" (локація #15)",
     );
 
     assert!(parser.consume_line(&closing).is_empty());
@@ -229,20 +216,20 @@ fn parses_singular_raid_open_and_ignores_singular_raid_close_with_escaped_newlin
 }
 
 #[test]
-fn blocks_events_in_other_modes_and_accepts_them_after_master_sword_join() {
+fn blocks_events_in_lobby_and_other_modes_and_accepts_them_after_master_sword_mod_load() {
     let mut parser = LogParser::default();
     let drop = chat("[Магистр] PlayerOne [#20] выбил \"Мифическое\" оружие Лесной меч");
 
-    parser.consume_line("[INFO] Joining server Хаб");
-    assert_eq!(parser.mode(), GameMode::Other);
+    parser.consume_line("[INFO] Loading mod MasterSword Lobby");
+    assert_eq!(parser.mode(), GameMode::MasterSwordLobby);
     assert!(parser.consume_line(&drop).is_empty());
 
-    parser.consume_line("[INFO] Joining server Мастера Мечей #2");
+    parser.consume_line("[INFO] Loading mod MasterSwordReborn");
     assert_eq!(parser.mode(), GameMode::MasterSword);
     assert_eq!(parser.consume_line(&drop).len(), 1);
 
-    parser.consume_line("[INFO] Joining server Мастера Мечей Лобби");
-    assert_eq!(parser.mode(), GameMode::MasterSwordLobby);
+    parser.consume_line("[INFO] Unloading mod MasterSwordReborn");
+    assert_eq!(parser.mode(), GameMode::Other);
     assert!(parser.consume_line(&drop).is_empty());
 }
 

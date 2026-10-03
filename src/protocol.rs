@@ -108,6 +108,40 @@ impl EventReport {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ChatPingReport {
+    #[serde(rename = "type")]
+    pub message_type: &'static str,
+    #[serde(rename = "messageId")]
+    pub message_id: Uuid,
+    #[serde(rename = "observedAt")]
+    pub observed_at: DateTime<Utc>,
+    pub sender: String,
+    pub message: String,
+    pub text: String,
+    pub mentions: Vec<String>,
+}
+
+impl ChatPingReport {
+    pub fn new(
+        sender: String,
+        message: String,
+        text: String,
+        mentions: Vec<String>,
+        observed_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            message_type: "CHAT_PING_REPORT",
+            message_id: Uuid::now_v7(),
+            observed_at,
+            sender,
+            message,
+            text,
+            mentions,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct CollectorStateMessage {
     #[serde(rename = "type")]
     pub message_type: &'static str,

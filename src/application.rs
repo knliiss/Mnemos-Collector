@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -11,14 +12,18 @@ use crate::cristalix::{
     discover_latest_log, log_updated_within, scan_existing_log_lines,
 };
 use crate::diagnostics;
-use crate::parser::{EventDeduplicator, GameMode, LogParser};
-use crate::protocol::CollectorEvent;
+use crate::parser::{ChatPing, EventDeduplicator, GameMode, LogParser};
+use crate::protocol::{ChatPingReport, CollectorEvent};
 use crate::realtime::{RealtimeClient, RealtimeConfig};
 use crate::security::credential_id_from_access_key;
 use crate::spool::{PendingReport, ReportSpool};
 use crate::update::{UpdateCoordinator, UpdateHandoff};
 
 const MAX_REPORTS_PER_TICK: usize = 16;
+const MAX_PINGS_PER_TICK: usize = 16;
+const MAX_PENDING_PINGS: usize = 256;
+const MAX_PENDING_PING_AGE: Duration = Duration::from_secs(30);
+const LOCAL_PING_DEDUP_WINDOW: Duration = Duration::from_secs(2);
 const MAX_PENDING_REPORT_AGE_SECONDS: i64 = 30 * 60;
 const STARTUP_LOG_FRESHNESS: Duration = Duration::from_secs(60);
 const RECONNECT_STABILITY_WINDOW: Duration = Duration::from_secs(30);
@@ -42,6 +47,12 @@ impl Default for CollectorApplicationConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+struct PendingPing {
+    report: ChatPingReport,
+    queued_at: Instant,
+}
+
 pub struct CollectorApplication {
     config: CollectorApplicationConfig,
     access_key: String,
@@ -55,6 +66,7 @@ pub struct CollectorApplication {
     next_process_check: Instant,
     parser: LogParser,
     deduplicator: EventDeduplicator,
+    pending_pings: VecDeque<PendingPing>,
     tailer: Option<LogTailer>,
     cached_log_path: Option<PathBuf>,
     spool: ReportSpool,
@@ -105,6 +117,7 @@ impl CollectorApplication {
             next_process_check: now,
             parser: LogParser::default(),
             deduplicator: EventDeduplicator::new(Duration::from_secs(2)),
+            pending_pings: VecDeque::new(),
             tailer: None,
             cached_log_path: None,
             spool,
@@ -145,9 +158,15 @@ impl CollectorApplication {
         self.ensure_log_tailer().await?;
         self.read_log().await?;
 
-        if self.session_confirmed && self.parser.mode() == GameMode::MasterSword {
-            self.observe_connection().await;
-            self.deliver_pending_reports().await?;
+        if self.session_confirmed {
+            if self.parser.mode() == GameMode::MasterSword {
+                self.observe_connection().await;
+                self.deliver_pending_reports().await?;
+            } else {
+                self.pause_connection().await;
+            }
+
+            self.deliver_pending_pings().await;
         } else {
             self.pause_connection().await;
         }
@@ -189,6 +208,7 @@ impl CollectorApplication {
 
             self.enqueue_events(pending_events).await?;
             self.parser = LogParser::default();
+            self.pending_pings.clear();
             self.tailer = None;
             self.cached_log_path = None;
             self.log_missing_logged = false;
@@ -214,6 +234,7 @@ impl CollectorApplication {
                 "Cristalix log source changed; parser context will be rebuilt without replaying historical events",
             );
             self.parser = LogParser::default();
+            self.pending_pings.clear();
             self.tailer = None;
             self.cached_log_path = None;
             self.log_missing_logged = false;
@@ -398,6 +419,7 @@ impl CollectorApplication {
                     format!("latest.log read failed and will be rediscovered: {error:#}"),
                 );
                 self.parser = LogParser::default();
+                self.pending_pings.clear();
                 self.tailer = None;
                 self.cached_log_path = None;
                 self.log_missing_logged = false;
@@ -421,6 +443,7 @@ impl CollectorApplication {
                 "latest.log was replaced or truncated; rebuilding mode context without replaying historical events",
             );
             self.parser = LogParser::default();
+            self.pending_pings.clear();
             self.session_confirmed = false;
 
             if let Some(path) = path {
@@ -444,6 +467,7 @@ impl CollectorApplication {
             let previous_mode = self.parser.mode();
             let events = self.parser.consume_line(&line);
             let current_mode = self.parser.mode();
+            let ping = self.parser.parse_chat_ping(&line);
 
             if previous_mode != current_mode {
                 diagnostics::info(
@@ -454,6 +478,10 @@ impl CollectorApplication {
             }
 
             self.enqueue_events(events).await?;
+
+            if let Some(ping) = ping {
+                self.enqueue_ping(ping);
+            }
 
             if previous_mode == GameMode::MasterSword && current_mode != GameMode::MasterSword {
                 self.pause_connection().await;
@@ -479,6 +507,38 @@ impl CollectorApplication {
         }
 
         Ok(())
+    }
+
+    fn enqueue_ping(&mut self, ping: ChatPing) {
+        let now = Instant::now();
+
+        if self.pending_pings.back().is_some_and(|pending| {
+            now.saturating_duration_since(pending.queued_at) <= LOCAL_PING_DEDUP_WINDOW
+                && pending.report.sender.eq_ignore_ascii_case(&ping.sender)
+                && pending.report.message == ping.message
+        }) {
+            diagnostics::debug("pings", "Duplicate chat ping suppressed locally");
+            return;
+        }
+
+        while self.pending_pings.len() >= MAX_PENDING_PINGS {
+            self.pending_pings.pop_front();
+            diagnostics::warn(
+                "pings",
+                "Pending chat ping queue is full; oldest ping was discarded",
+            );
+        }
+
+        self.pending_pings.push_back(PendingPing {
+            report: ChatPingReport::new(
+                ping.sender,
+                ping.message,
+                ping.text,
+                ping.mentions,
+                Utc::now(),
+            ),
+            queued_at: now,
+        });
     }
 
     async fn ensure_realtime_connection(&mut self) {
@@ -553,6 +613,47 @@ impl CollectorApplication {
         }
     }
 
+    async fn deliver_pending_pings(&mut self) {
+        let now = Instant::now();
+
+        while self.pending_pings.front().is_some_and(|pending| {
+            now.saturating_duration_since(pending.queued_at) > MAX_PENDING_PING_AGE
+        }) {
+            self.pending_pings.pop_front();
+            diagnostics::debug("pings", "Expired pending chat ping discarded");
+        }
+
+        for _ in 0..MAX_PINGS_PER_TICK {
+            let Some(pending) = self.pending_pings.front().cloned() else {
+                return;
+            };
+            let Some(client) = self.realtime.as_mut() else {
+                return;
+            };
+
+            if let Err(error) = client.report_ping(&pending.report).await {
+                diagnostics::warn(
+                    "pings",
+                    format!("Chat ping delivery failed and will retry after reconnect: {error:#}"),
+                );
+                diagnostics::set_realtime_connected(false);
+                diagnostics::set_observing(false);
+                self.clear_realtime_connection();
+                self.schedule_reconnect();
+                return;
+            }
+
+            diagnostics::debug(
+                "pings",
+                format!(
+                    "realtime-service queued chat ping report {}",
+                    pending.report.message_id
+                ),
+            );
+            self.pending_pings.pop_front();
+        }
+    }
+
     async fn deliver_pending_reports(&mut self) -> Result<()> {
         discard_expired_reports(&mut self.spool).await?;
 
@@ -617,7 +718,10 @@ impl CollectorApplication {
         };
         let had_pending_update = coordinator.has_pending_update();
         let poll_result = coordinator
-            .poll(self.realtime.as_mut(), self.spool.is_empty())
+            .poll(
+                self.realtime.as_mut(),
+                self.spool.is_empty() && self.pending_pings.is_empty(),
+            )
             .await;
 
         let request = match poll_result {

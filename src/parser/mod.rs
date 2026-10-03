@@ -2,28 +2,20 @@ mod dedup;
 
 pub use dedup::EventDeduplicator;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::LazyLock;
 
 use regex::Regex;
 
 use crate::localization::{SaoLocalizationStore, sao_localizations};
-use crate::protocol::{BoosterType, CollectorEvent, GlobalEventType};
+use crate::protocol::CollectorEvent;
 
-static MASTER_SWORD_SERVER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"Joining server Мастера Мечей #\d+").expect("valid regex"));
-static LEGACY_RAID_LOCATION: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\(локация\s+#(?P<location>\d+)\)").expect("valid regex"));
-static LEGACY_BOOSTER_LINE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"^(?P<player>.+?)\s+активировал\s+"Бустер\s+(?P<booster>удачи|денег|урона|силы)\s+x[^"]+"\s+на\s+\S+\s*$"#,
-    )
-    .expect("valid regex")
-});
 static NICKNAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[\p{L}0-9_]{4,20}$").expect("valid regex"));
 static PLAYER_CHAT_MESSAGE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[#(?:\d+|\?)\]\s*»").expect("valid regex"));
+static MENTION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"@[\p{L}0-9_]{4,20}").expect("valid regex"));
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum GameMode {
@@ -38,6 +30,14 @@ impl GameMode {
     fn accepts_events(self) -> bool {
         matches!(self, Self::Unknown | Self::MasterSword)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ChatPing {
+    pub sender: String,
+    pub message: String,
+    pub text: String,
+    pub mentions: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -93,16 +93,17 @@ impl LogParser {
             return Vec::new();
         }
 
+        if !self.mode.accepts_events() {
+            return Vec::new();
+        }
+
         let localized_raid_open = self.localizations.raid_open_locations(payload);
 
-        if localized_raid_open.is_some() || is_legacy_raid_open(payload) {
+        if let Some(locations) = localized_raid_open {
             let mut events = self.flush_pending_raid();
 
             if self.mode.accepts_events() {
                 self.mode = GameMode::MasterSword;
-
-                let locations =
-                    localized_raid_open.unwrap_or_else(|| parse_legacy_raid_locations(payload));
 
                 if locations.is_empty() {
                     self.pending_raid = Some(BTreeSet::new());
@@ -116,27 +117,14 @@ impl LogParser {
             return events;
         }
 
-        if self.localizations.is_raid_close(payload) || is_legacy_raid_close(payload) {
+        if self.localizations.is_raid_close(payload) {
             let events = self.flush_pending_raid();
             self.pending_raid = None;
 
             return events;
         }
 
-        let raid_locations = parse_legacy_raid_locations(payload);
-
-        if !raid_locations.is_empty()
-            && let Some(locations) = self.pending_raid.as_mut()
-        {
-            locations.extend(raid_locations);
-            return Vec::new();
-        }
-
         let mut events = self.flush_pending_raid();
-
-        if !self.mode.accepts_events() {
-            return events;
-        }
 
         let parsed = parse_drop(payload, &self.localizations)
             .or_else(|| parse_booster(payload, &self.localizations))
@@ -150,24 +138,23 @@ impl LogParser {
         events
     }
 
+    pub fn parse_chat_ping(&self, line: &str) -> Option<ChatPing> {
+        let payload = extract_chat_payload(line)?;
+        parse_player_chat_ping(payload)
+    }
+
     pub fn flush(&mut self) -> Vec<CollectorEvent> {
         self.flush_pending_raid()
     }
 
     fn update_mode(&mut self, line: &str) {
-        if line.contains("Joining server Мастера Мечей Лобби") {
-            self.mode = GameMode::MasterSwordLobby;
-            self.pending_raid = None;
-            return;
-        }
-
-        if MASTER_SWORD_SERVER.is_match(line) {
+        if line.contains("Loading mod MasterSwordReborn") {
             self.mode = GameMode::MasterSword;
             return;
         }
 
-        if line.contains("Joining server ") {
-            self.mode = GameMode::Other;
+        if line.contains("Loading mod MasterSword Lobby") {
+            self.mode = GameMode::MasterSwordLobby;
             self.pending_raid = None;
             return;
         }
@@ -208,9 +195,6 @@ fn is_player_chat_message(payload: &str) -> bool {
 fn is_master_sword_activity(payload: &str, localizations: &SaoLocalizationStore) -> bool {
     localizations.raid_open_locations(payload).is_some()
         || localizations.is_raid_close(payload)
-        || is_legacy_raid_open(payload)
-        || is_legacy_raid_close(payload)
-        || !parse_legacy_raid_locations(payload).is_empty()
         || parse_drop(payload, localizations).is_some()
         || parse_booster(payload, localizations).is_some()
         || parse_global(payload, localizations).is_some()
@@ -218,10 +202,6 @@ fn is_master_sword_activity(payload: &str, localizations: &SaoLocalizationStore)
 
 fn parse_drop(payload: &str, localizations: &SaoLocalizationStore) -> Option<CollectorEvent> {
     let drop = localizations.parse_item_drop(payload)?;
-
-    if drop.player_prefix.contains('»') {
-        return None;
-    }
 
     let dropped_for = extract_nickname(&drop.player_prefix)?;
 
@@ -239,38 +219,11 @@ fn parse_drop(payload: &str, localizations: &SaoLocalizationStore) -> Option<Col
 }
 
 fn parse_booster(payload: &str, localizations: &SaoLocalizationStore) -> Option<CollectorEvent> {
-    if let Some(booster) = localizations.parse_booster(payload)
-        && !booster.player_prefix.contains('»')
-        && let Some(activated_by) = extract_nickname(&booster.player_prefix)
-    {
-        return Some(CollectorEvent::Booster {
-            booster_type: booster.booster_type,
-            activated_by,
-        });
-    }
-
-    parse_legacy_booster(payload)
-}
-
-fn parse_legacy_booster(payload: &str) -> Option<CollectorEvent> {
-    let captures = LEGACY_BOOSTER_LINE.captures(payload)?;
-    let player_prefix = captures.name("player")?.as_str();
-
-    if player_prefix.contains('»') {
-        return None;
-    }
-
-    let activated_by = extract_nickname(player_prefix)?;
-    let booster_type = match captures.name("booster")?.as_str() {
-        "удачи" => BoosterType::Luck,
-        "денег" => BoosterType::Money,
-        "урона" => BoosterType::Damage,
-        "силы" => BoosterType::Power,
-        _ => return None,
-    };
+    let booster = localizations.parse_booster(payload)?;
+    let activated_by = extract_nickname(&booster.player_prefix)?;
 
     Some(CollectorEvent::Booster {
-        booster_type,
+        booster_type: booster.booster_type,
         activated_by,
     })
 }
@@ -278,50 +231,53 @@ fn parse_legacy_booster(payload: &str) -> Option<CollectorEvent> {
 fn parse_global(payload: &str, localizations: &SaoLocalizationStore) -> Option<CollectorEvent> {
     localizations
         .parse_global(payload)
-        .or_else(|| parse_legacy_global(payload))
         .map(|event_type| CollectorEvent::Global { event_type })
 }
 
-fn parse_legacy_global(payload: &str) -> Option<GlobalEventType> {
-    if payload.contains("Тьма наступает с заходом солнца") {
-        return Some(GlobalEventType::Darkness);
+fn parse_player_chat_ping(payload: &str) -> Option<ChatPing> {
+    let separator = PLAYER_CHAT_MESSAGE.find(payload)?;
+    let player_prefix = payload[..separator.start()].trim_end();
+    let text = payload[separator.end()..].trim();
+    let sender = extract_nickname(player_prefix)?;
+    let mentions = extract_mentions(text);
+
+    if mentions.is_empty() {
+        return None;
     }
 
-    if payload.contains("кровавая луна") {
-        return Some(GlobalEventType::Moon);
-    }
-
-    if payload.contains("Небо темнеет и окутывается глубокой тенью")
-    {
-        return Some(GlobalEventType::Eclipse);
-    }
-
-    if payload.contains("тепло солнца касается вашей кожи") {
-        return Some(GlobalEventType::Explosion);
-    }
-
-    if payload.contains("комета проносится по небу") && payload.contains("хаоса")
-    {
-        return Some(GlobalEventType::CometChaos);
-    }
-
-    None
+    Some(ChatPing {
+        sender,
+        message: payload.trim().to_owned(),
+        text: text.to_owned(),
+        mentions,
+    })
 }
 
-fn is_legacy_raid_open(payload: &str) -> bool {
-    payload.contains("[Рейд]") && payload.contains("Открылись врата на рейды")
+fn extract_mentions(text: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut mentions = Vec::new();
+
+    for candidate in MENTION.find_iter(text) {
+        let before = text[..candidate.start()].chars().next_back();
+        let after = text[candidate.end()..].chars().next();
+
+        if before.is_some_and(is_nickname_character) || after.is_some_and(is_nickname_character) {
+            continue;
+        }
+
+        let nickname = &candidate.as_str()[1..];
+        let normalized = nickname.to_lowercase();
+
+        if seen.insert(normalized) {
+            mentions.push(nickname.to_owned());
+        }
+    }
+
+    mentions
 }
 
-fn is_legacy_raid_close(payload: &str) -> bool {
-    payload.contains("[Рейд]") && payload.contains("Закрылись врата")
-}
-
-fn parse_legacy_raid_locations(payload: &str) -> BTreeSet<u16> {
-    LEGACY_RAID_LOCATION
-        .captures_iter(payload)
-        .filter_map(|captures| captures.name("location"))
-        .filter_map(|location| location.as_str().parse().ok())
-        .collect()
+fn is_nickname_character(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
 }
 
 fn extract_nickname(player_prefix: &str) -> Option<String> {
@@ -346,60 +302,79 @@ fn extract_nickname(player_prefix: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{GameMode, LogParser, parse_legacy_booster};
-    use crate::protocol::{BoosterType, CollectorEvent};
+    use super::{GameMode, LogParser, extract_mentions};
 
     #[test]
-    fn context_scan_recovers_master_sword_from_existing_join_line() {
+    fn context_scan_recovers_master_sword_from_mod_lifecycle() {
         let mut parser = LogParser::default();
 
-        parser.consume_context_line("[Client thread/INFO]: Joining server Мастера Мечей #17");
+        parser.consume_context_line("[Client thread/INFO]: Loading mod MasterSwordReborn");
 
         assert_eq!(parser.mode(), GameMode::MasterSword);
         assert!(parser.flush().is_empty());
     }
 
     #[test]
-    fn context_scan_keeps_the_latest_server_transition() {
+    fn unknown_join_line_does_not_override_master_sword_without_an_unload_signal() {
         let mut parser = LogParser::default();
 
-        parser.consume_context_line("Joining server Мастера Мечей #17");
-        parser.consume_context_line("Joining server Лобби #4");
+        parser.consume_context_line("[Client thread/INFO]: Loading mod MasterSwordReborn");
+        parser.consume_context_line("Joining server Sword Masters #17");
 
+        assert_eq!(parser.mode(), GameMode::MasterSword);
+
+        parser.consume_context_line("[Client thread/INFO]: Unloading mod MasterSwordReborn");
         assert_eq!(parser.mode(), GameMode::Other);
-        assert!(parser.flush().is_empty());
     }
 
     #[test]
-    fn context_scan_can_recover_master_sword_from_recent_activity() {
+    fn context_scan_can_recover_master_sword_from_localized_activity() {
         let mut parser = LogParser::default();
 
-        parser.consume_context_line("[CHAT] [Рейд] Открылись врата на рейды");
+        parser.consume_context_line("[CHAT] Darkness comes with the setting sun..");
 
         assert_eq!(parser.mode(), GameMode::MasterSword);
         assert!(parser.flush().is_empty());
     }
 
     #[test]
-    fn legacy_booster_fallback_recognizes_current_russian_contract() {
-        let event =
-            parse_legacy_booster(r#"MVP+ ┃ Booster_User активировал "Бустер силы x1.5" на 30м"#);
+    fn chat_ping_parser_is_not_restricted_to_master_sword_mode() {
+        let mut parser = LogParser::default();
+        let line = "[CHAT] MVP ┃ TranZorXx [#401] » @knaliz привет";
 
-        assert_eq!(
-            event,
-            Some(CollectorEvent::Booster {
-                booster_type: BoosterType::Power,
-                activated_by: "Booster_User".to_owned(),
-            }),
+        assert!(parser.parse_chat_ping(line).is_some());
+
+        parser.consume_context_line("[Client thread/INFO]: Loading mod MasterSword Lobby");
+        assert_eq!(parser.mode(), GameMode::MasterSwordLobby);
+        assert!(parser.parse_chat_ping(line).is_some());
+
+        parser.consume_context_line("[Client thread/INFO]: Unloading mod MasterSword Lobby");
+        assert_eq!(parser.mode(), GameMode::Other);
+        assert!(parser.parse_chat_ping(line).is_some());
+    }
+
+    #[test]
+    fn chat_ping_parser_keeps_self_mentions_and_rejects_system_messages() {
+        let parser = LogParser::default();
+
+        let self_ping = parser
+            .parse_chat_ping("[CHAT] MVP ┃ Knaliz [#401] » @Knaliz проверка")
+            .expect("self mention should be reported");
+
+        assert_eq!(self_ping.sender, "Knaliz");
+        assert_eq!(self_ping.mentions, vec!["Knaliz".to_owned()]);
+        assert!(
+            parser
+                .parse_chat_ping("[CHAT] [Рейд] » @Knaliz открылись врата")
+                .is_none()
         );
     }
 
     #[test]
-    fn legacy_booster_fallback_rejects_player_chat_lookalike() {
-        let event = parse_legacy_booster(
-            r#"PlayerOne [#20] » Booster_User активировал "Бустер силы x1.5" на 30м"#,
+    fn mention_parser_respects_boundaries_and_deduplicates_case_insensitively() {
+        assert_eq!(
+            extract_mentions("@Knaliz, @other_1! @KNALIZ abc@ignored_user"),
+            vec!["Knaliz".to_owned(), "other_1".to_owned()],
         );
-
-        assert_eq!(event, None);
     }
 }
