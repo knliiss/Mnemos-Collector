@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 
 use crate::localization::{SaoLocalizationStore, sao_localizations};
-use crate::protocol::{CollectorEvent, GlobalEventType};
+use crate::protocol::CollectorEvent;
 
 static MASTER_SWORD_SERVER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"Joining server Мастера Мечей #\d+").expect("valid regex"));
@@ -138,10 +138,6 @@ impl LogParser {
 
         let mut events = self.flush_pending_raid();
 
-        if !self.mode.accepts_events() {
-            return events;
-        }
-
         let parsed = parse_drop(payload, &self.localizations)
             .or_else(|| parse_booster(payload, &self.localizations))
             .or_else(|| parse_global(payload, &self.localizations));
@@ -168,6 +164,17 @@ impl LogParser {
     }
 
     fn update_mode(&mut self, line: &str) {
+        if line.contains("Loading mod MasterSwordReborn") {
+            self.mode = GameMode::MasterSword;
+            return;
+        }
+
+        if line.contains("Loading mod MasterSword Lobby") {
+            self.mode = GameMode::MasterSwordLobby;
+            self.pending_raid = None;
+            return;
+        }
+
         if line.contains("Joining server Мастера Мечей Лобби") {
             self.mode = GameMode::MasterSwordLobby;
             self.pending_raid = None;
@@ -231,10 +238,6 @@ fn is_master_sword_activity(payload: &str, localizations: &SaoLocalizationStore)
 
 fn parse_drop(payload: &str, localizations: &SaoLocalizationStore) -> Option<CollectorEvent> {
     let drop = localizations.parse_item_drop(payload)?;
-
-    if drop.player_prefix.contains('»') {
-        return None;
-    }
 
     let dropped_for = extract_nickname(&drop.player_prefix)?;
 
