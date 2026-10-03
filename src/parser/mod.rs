@@ -303,7 +303,6 @@ fn extract_nickname(player_prefix: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{GameMode, LogParser, extract_mentions};
-    use crate::protocol::CollectorEvent;
 
     #[test]
     fn context_scan_recovers_master_sword_from_mod_lifecycle() {
