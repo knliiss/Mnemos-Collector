@@ -71,14 +71,15 @@ fn parses_all_global_event_fixture_lines() {
 }
 
 #[test]
-fn aggregates_multiline_raid_fixture() {
+fn parses_current_raid_fixture_locations() {
     let events = parse_fixture(include_str!("fixtures/cristalix/raid.log"));
 
     assert_eq!(
         events,
-        vec![CollectorEvent::Raid {
-            locations: vec![1, 3],
-        }]
+        vec![
+            CollectorEvent::Raid { locations: vec![1] },
+            CollectorEvent::Raid { locations: vec![3] },
+        ]
     );
 }
 
