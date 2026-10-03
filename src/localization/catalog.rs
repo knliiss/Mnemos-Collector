@@ -63,6 +63,29 @@ pub(super) struct LocalizationLanguageSnapshot {
     pub properties: HashMap<String, String>,
 }
 
+impl LocalizationSnapshot {
+    pub(super) fn merge_missing_from(mut self, fallback: &Self) -> Self {
+        for (locale, fallback_language) in &fallback.languages {
+            match self.languages.get_mut(locale) {
+                Some(language) => {
+                    for (key, value) in &fallback_language.properties {
+                        language
+                            .properties
+                            .entry(key.clone())
+                            .or_insert_with(|| value.clone());
+                    }
+                }
+                None => {
+                    self.languages
+                        .insert(locale.clone(), fallback_language.clone());
+                }
+            }
+        }
+
+        self
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SaoLocalizationStore {
     inner: Arc<RwLock<SaoLocalizationCatalog>>,
