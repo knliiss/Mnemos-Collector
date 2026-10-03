@@ -19,8 +19,8 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use crate::diagnostics;
 use crate::protocol::{
-    COLLECTOR_PROTOCOL_VERSION, CollectorStateMessage, CollectorUpdateReadyMessage, EventReport,
-    ObservationState,
+    COLLECTOR_PROTOCOL_VERSION, ChatPingReport, CollectorStateMessage, CollectorUpdateReadyMessage,
+    EventReport, ObservationState,
 };
 use crate::realtime::response::ServerMessage;
 use crate::update::CollectorVersion;
@@ -139,6 +139,12 @@ impl RealtimeClient {
     }
 
     pub async fn report(&mut self, report: &EventReport) -> Result<()> {
+        self.set_state(ObservationState::Observing).await?;
+        self.send_json(report).await?;
+        self.wait_for_report_queued(report.message_id).await
+    }
+
+    pub async fn report_ping(&mut self, report: &ChatPingReport) -> Result<()> {
         self.set_state(ObservationState::Observing).await?;
         self.send_json(report).await?;
         self.wait_for_report_queued(report.message_id).await
