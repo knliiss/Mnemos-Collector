@@ -93,6 +93,10 @@ impl LogParser {
             return Vec::new();
         }
 
+        if !self.mode.accepts_events() {
+            return Vec::new();
+        }
+
         let localized_raid_open = self.localizations.raid_open_locations(payload);
 
         if let Some(locations) = localized_raid_open {
