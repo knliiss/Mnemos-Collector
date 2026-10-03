@@ -10,10 +10,6 @@ use regex::Regex;
 use crate::localization::{SaoLocalizationStore, sao_localizations};
 use crate::protocol::CollectorEvent;
 
-static MASTER_SWORD_SERVER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"Joining server Мастера Мечей #\d+").expect("valid regex"));
-static LEGACY_RAID_LOCATION: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\(локация\s+#(?P<location>\d+)\)").expect("valid regex"));
 static NICKNAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[\p{L}0-9_]{4,20}$").expect("valid regex"));
 static PLAYER_CHAT_MESSAGE: LazyLock<Regex> =
@@ -99,14 +95,11 @@ impl LogParser {
 
         let localized_raid_open = self.localizations.raid_open_locations(payload);
 
-        if localized_raid_open.is_some() || is_legacy_raid_open(payload) {
+        if let Some(locations) = localized_raid_open {
             let mut events = self.flush_pending_raid();
 
             if self.mode.accepts_events() {
                 self.mode = GameMode::MasterSword;
-
-                let locations =
-                    localized_raid_open.unwrap_or_else(|| parse_legacy_raid_locations(payload));
 
                 if locations.is_empty() {
                     self.pending_raid = Some(BTreeSet::new());
@@ -120,20 +113,11 @@ impl LogParser {
             return events;
         }
 
-        if self.localizations.is_raid_close(payload) || is_legacy_raid_close(payload) {
+        if self.localizations.is_raid_close(payload) {
             let events = self.flush_pending_raid();
             self.pending_raid = None;
 
             return events;
-        }
-
-        let raid_locations = parse_legacy_raid_locations(payload);
-
-        if !raid_locations.is_empty()
-            && let Some(locations) = self.pending_raid.as_mut()
-        {
-            locations.extend(raid_locations);
-            return Vec::new();
         }
 
         let mut events = self.flush_pending_raid();
@@ -175,23 +159,6 @@ impl LogParser {
             return;
         }
 
-        if line.contains("Joining server Мастера Мечей Лобби") {
-            self.mode = GameMode::MasterSwordLobby;
-            self.pending_raid = None;
-            return;
-        }
-
-        if MASTER_SWORD_SERVER.is_match(line) {
-            self.mode = GameMode::MasterSword;
-            return;
-        }
-
-        if line.contains("Joining server ") {
-            self.mode = GameMode::Other;
-            self.pending_raid = None;
-            return;
-        }
-
         if line.contains("Unloading mod MasterSword") {
             self.mode = GameMode::Other;
             self.pending_raid = None;
@@ -228,9 +195,6 @@ fn is_player_chat_message(payload: &str) -> bool {
 fn is_master_sword_activity(payload: &str, localizations: &SaoLocalizationStore) -> bool {
     localizations.raid_open_locations(payload).is_some()
         || localizations.is_raid_close(payload)
-        || is_legacy_raid_open(payload)
-        || is_legacy_raid_close(payload)
-        || !parse_legacy_raid_locations(payload).is_empty()
         || parse_drop(payload, localizations).is_some()
         || parse_booster(payload, localizations).is_some()
         || parse_global(payload, localizations).is_some()
@@ -268,22 +232,6 @@ fn parse_global(payload: &str, localizations: &SaoLocalizationStore) -> Option<C
     localizations
         .parse_global(payload)
         .map(|event_type| CollectorEvent::Global { event_type })
-}
-
-fn is_legacy_raid_open(payload: &str) -> bool {
-    payload.contains("[Рейд]") && payload.contains("Открылись врата на рейды")
-}
-
-fn is_legacy_raid_close(payload: &str) -> bool {
-    payload.contains("[Рейд]") && payload.contains("Закрылись врата")
-}
-
-fn parse_legacy_raid_locations(payload: &str) -> BTreeSet<u16> {
-    LEGACY_RAID_LOCATION
-        .captures_iter(payload)
-        .filter_map(|captures| captures.name("location"))
-        .filter_map(|location| location.as_str().parse().ok())
-        .collect()
 }
 
 fn parse_player_chat_ping(payload: &str) -> Option<ChatPing> {
@@ -360,31 +308,33 @@ mod tests {
     use crate::protocol::CollectorEvent;
 
     #[test]
-    fn context_scan_recovers_master_sword_from_existing_join_line() {
+    fn context_scan_recovers_master_sword_from_mod_lifecycle() {
         let mut parser = LogParser::default();
 
-        parser.consume_context_line("[Client thread/INFO]: Joining server Мастера Мечей #17");
+        parser.consume_context_line("[Client thread/INFO]: Loading mod MasterSwordReborn");
 
         assert_eq!(parser.mode(), GameMode::MasterSword);
         assert!(parser.flush().is_empty());
     }
 
     #[test]
-    fn context_scan_keeps_the_latest_server_transition() {
+    fn unknown_join_line_does_not_override_master_sword_without_an_unload_signal() {
         let mut parser = LogParser::default();
 
-        parser.consume_context_line("Joining server Мастера Мечей #17");
-        parser.consume_context_line("Joining server Лобби #4");
+        parser.consume_context_line("[Client thread/INFO]: Loading mod MasterSwordReborn");
+        parser.consume_context_line("Joining server Sword Masters #17");
 
+        assert_eq!(parser.mode(), GameMode::MasterSword);
+
+        parser.consume_context_line("[Client thread/INFO]: Unloading mod MasterSwordReborn");
         assert_eq!(parser.mode(), GameMode::Other);
-        assert!(parser.flush().is_empty());
     }
 
     #[test]
-    fn context_scan_can_recover_master_sword_from_recent_activity() {
+    fn context_scan_can_recover_master_sword_from_localized_activity() {
         let mut parser = LogParser::default();
 
-        parser.consume_context_line("[CHAT] [Рейд] Открылись врата на рейды");
+        parser.consume_context_line("[CHAT] Darkness comes with the setting sun..");
 
         assert_eq!(parser.mode(), GameMode::MasterSword);
         assert!(parser.flush().is_empty());
