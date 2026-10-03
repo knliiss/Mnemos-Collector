@@ -139,10 +139,6 @@ impl LogParser {
     }
 
     pub fn parse_chat_ping(&self, line: &str) -> Option<ChatPing> {
-        if self.mode != GameMode::MasterSword {
-            return None;
-        }
-
         let payload = extract_chat_payload(line)?;
         parse_player_chat_ping(payload)
     }
@@ -339,6 +335,39 @@ mod tests {
 
         assert_eq!(parser.mode(), GameMode::MasterSword);
         assert!(parser.flush().is_empty());
+    }
+
+    #[test]
+    fn chat_ping_parser_is_not_restricted_to_master_sword_mode() {
+        let mut parser = LogParser::default();
+        let line = "[CHAT] MVP ┃ TranZorXx [#401] » @knaliz привет";
+
+        assert!(parser.parse_chat_ping(line).is_some());
+
+        parser.consume_context_line("[Client thread/INFO]: Loading mod MasterSword Lobby");
+        assert_eq!(parser.mode(), GameMode::MasterSwordLobby);
+        assert!(parser.parse_chat_ping(line).is_some());
+
+        parser.consume_context_line("[Client thread/INFO]: Unloading mod MasterSword Lobby");
+        assert_eq!(parser.mode(), GameMode::Other);
+        assert!(parser.parse_chat_ping(line).is_some());
+    }
+
+    #[test]
+    fn chat_ping_parser_keeps_self_mentions_and_rejects_system_messages() {
+        let parser = LogParser::default();
+
+        let self_ping = parser
+            .parse_chat_ping("[CHAT] MVP ┃ Knaliz [#401] » @Knaliz проверка")
+            .expect("self mention should be reported");
+
+        assert_eq!(self_ping.sender, "Knaliz");
+        assert_eq!(self_ping.mentions, vec!["Knaliz".to_owned()]);
+        assert!(
+            parser
+                .parse_chat_ping("[CHAT] [Рейд] » @Knaliz открылись врата")
+                .is_none()
+        );
     }
 
     #[test]
