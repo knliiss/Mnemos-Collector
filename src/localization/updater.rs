@@ -211,7 +211,10 @@ async fn download_manifest(client: &Client) -> Result<LocalizationManifest> {
         }
     }
 
-    Err(last_error.context("no SAO localization manifest endpoint was attempted")?)
+    match last_error {
+        Some(error) => Err(error),
+        None => bail!("no SAO localization manifest endpoint was attempted"),
+    }
 }
 
 async fn download_language_pack(
