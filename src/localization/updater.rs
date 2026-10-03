@@ -43,10 +43,7 @@ pub(super) fn load_cached_snapshot() -> Option<LocalizationSnapshot> {
     }
 }
 
-pub(super) fn ensure_refresh_started(
-    store: SaoLocalizationStore,
-    fallback: LocalizationSnapshot,
-) {
+pub(super) fn ensure_refresh_started(store: SaoLocalizationStore, fallback: LocalizationSnapshot) {
     if REFRESH_STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
@@ -61,10 +58,7 @@ pub(super) fn ensure_refresh_started(
     });
 }
 
-async fn refresh_loop(
-    store: SaoLocalizationStore,
-    fallback: LocalizationSnapshot,
-) {
+async fn refresh_loop(store: SaoLocalizationStore, fallback: LocalizationSnapshot) {
     let client = match Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .user_agent(USER_AGENT)
@@ -190,9 +184,13 @@ async fn download_manifest(client: &Client) -> Result<LocalizationManifest> {
                 .get(*url)
                 .send()
                 .await
-                .with_context(|| format!("failed to download SAO localization manifest from {url}"))?
+                .with_context(|| {
+                    format!("failed to download SAO localization manifest from {url}")
+                })?
                 .error_for_status()
-                .with_context(|| format!("SAO localization manifest {url} returned an error status"))?
+                .with_context(|| {
+                    format!("SAO localization manifest {url} returned an error status")
+                })?
                 .json::<LocalizationManifest>()
                 .await
                 .with_context(|| format!("failed to decode SAO localization manifest from {url}"))
