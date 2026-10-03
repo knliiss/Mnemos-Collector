@@ -611,11 +611,9 @@ impl CollectorApplication {
     async fn deliver_pending_pings(&mut self) {
         let now = Instant::now();
 
-        while self
-            .pending_pings
-            .front()
-            .is_some_and(|pending| now.saturating_duration_since(pending.queued_at) > MAX_PENDING_PING_AGE)
-        {
+        while self.pending_pings.front().is_some_and(|pending| {
+            now.saturating_duration_since(pending.queued_at) > MAX_PENDING_PING_AGE
+        }) {
             self.pending_pings.pop_front();
             diagnostics::debug("pings", "Expired pending chat ping discarded");
         }
