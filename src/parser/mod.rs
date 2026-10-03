@@ -261,9 +261,7 @@ fn extract_mentions(text: &str) -> Vec<String> {
         let before = text[..candidate.start()].chars().next_back();
         let after = text[candidate.end()..].chars().next();
 
-        if before.is_some_and(is_nickname_character)
-            || after.is_some_and(is_nickname_character)
-        {
+        if before.is_some_and(is_nickname_character) || after.is_some_and(is_nickname_character) {
             continue;
         }
 
