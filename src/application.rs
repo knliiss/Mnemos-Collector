@@ -158,10 +158,15 @@ impl CollectorApplication {
         self.ensure_log_tailer().await?;
         self.read_log().await?;
 
-        if self.session_confirmed && self.parser.mode() == GameMode::MasterSword {
-            self.observe_connection().await;
+        if self.session_confirmed {
+            if self.parser.mode() == GameMode::MasterSword {
+                self.observe_connection().await;
+                self.deliver_pending_reports().await?;
+            } else {
+                self.pause_connection().await;
+            }
+
             self.deliver_pending_pings().await;
-            self.deliver_pending_reports().await?;
         } else {
             self.pause_connection().await;
         }
