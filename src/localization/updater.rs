@@ -12,7 +12,10 @@ use sha2::{Digest, Sha256};
 use super::catalog::{LocalizationLanguageSnapshot, LocalizationSnapshot, SaoLocalizationStore};
 use crate::diagnostics;
 
-const MANIFEST_URL: &str = "https://webdata.c7x.dev/client/lang.json";
+const MANIFEST_URLS: &[&str] = &[
+    "https://ruwebdata.c7x.dev/client/lang.json",
+    "https://webdata.c7x.dev/client/lang.json",
+];
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const RETRY_INTERVAL: Duration = Duration::from_secs(60);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
@@ -40,7 +43,10 @@ pub(super) fn load_cached_snapshot() -> Option<LocalizationSnapshot> {
     }
 }
 
-pub(super) fn ensure_refresh_started(store: SaoLocalizationStore) {
+pub(super) fn ensure_refresh_started(
+    store: SaoLocalizationStore,
+    fallback: LocalizationSnapshot,
+) {
     if REFRESH_STARTED.swap(true, Ordering::AcqRel) {
         return;
     }
@@ -51,11 +57,14 @@ pub(super) fn ensure_refresh_started(store: SaoLocalizationStore) {
     };
 
     runtime.spawn(async move {
-        refresh_loop(store).await;
+        refresh_loop(store, fallback).await;
     });
 }
 
-async fn refresh_loop(store: SaoLocalizationStore) {
+async fn refresh_loop(
+    store: SaoLocalizationStore,
+    fallback: LocalizationSnapshot,
+) {
     let client = match Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .user_agent(USER_AGENT)
@@ -72,7 +81,7 @@ async fn refresh_loop(store: SaoLocalizationStore) {
     };
 
     loop {
-        let delay = match refresh_once(&client, &store).await {
+        let delay = match refresh_once(&client, &store, &fallback).await {
             Ok(updated) => {
                 if updated {
                     diagnostics::info(
@@ -98,17 +107,12 @@ async fn refresh_loop(store: SaoLocalizationStore) {
     }
 }
 
-async fn refresh_once(client: &Client, store: &SaoLocalizationStore) -> Result<bool> {
-    let manifest = client
-        .get(MANIFEST_URL)
-        .send()
-        .await
-        .context("failed to download SAO localization manifest")?
-        .error_for_status()
-        .context("SAO localization manifest returned an error status")?
-        .json::<LocalizationManifest>()
-        .await
-        .context("failed to decode SAO localization manifest")?;
+async fn refresh_once(
+    client: &Client,
+    store: &SaoLocalizationStore,
+    fallback: &LocalizationSnapshot,
+) -> Result<bool> {
+    let manifest = download_manifest(client).await?;
 
     let current = store.snapshot();
     let mut languages = HashMap::new();
@@ -165,7 +169,7 @@ async fn refresh_once(client: &Client, store: &SaoLocalizationStore) -> Result<b
     let catalog_changed = changed || current.languages.len() != languages.len();
 
     if catalog_changed {
-        let snapshot = LocalizationSnapshot { languages };
+        let snapshot = LocalizationSnapshot { languages }.merge_missing_from(fallback);
         persist_snapshot(&snapshot).await?;
         store.replace(snapshot)?;
     }
@@ -175,6 +179,39 @@ async fn refresh_once(client: &Client, store: &SaoLocalizationStore) -> Result<b
     }
 
     Ok(catalog_changed)
+}
+
+async fn download_manifest(client: &Client) -> Result<LocalizationManifest> {
+    let mut last_error = None;
+
+    for url in MANIFEST_URLS {
+        let result = async {
+            client
+                .get(*url)
+                .send()
+                .await
+                .with_context(|| format!("failed to download SAO localization manifest from {url}"))?
+                .error_for_status()
+                .with_context(|| format!("SAO localization manifest {url} returned an error status"))?
+                .json::<LocalizationManifest>()
+                .await
+                .with_context(|| format!("failed to decode SAO localization manifest from {url}"))
+        }
+        .await;
+
+        match result {
+            Ok(manifest) => return Ok(manifest),
+            Err(error) => {
+                diagnostics::warn(
+                    "localization",
+                    format!("SAO localization manifest endpoint {url} failed: {error:#}"),
+                );
+                last_error = Some(error);
+            }
+        }
+    }
+
+    Err(last_error.context("no SAO localization manifest endpoint was attempted")?)
 }
 
 async fn download_language_pack(
